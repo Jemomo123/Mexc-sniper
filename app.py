@@ -377,4 +377,154 @@ def main():
         st.stop()
     
     # Mobile-friendly expandable settings
-    with st.exp
+    with st.expander("⚙️ SETTINGS", expanded=False):
+        # Fetch available USDT pairs
+        try:
+            markets = exchange.load_markets()
+            usdt_pairs = [symbol for symbol in markets.keys() if symbol.endswith('/USDT') and markets[symbol]['active']]
+            usdt_pairs.sort()
+        except:
+            usdt_pairs = []
+            st.error("Failed to load markets")
+        
+        st.markdown("### 📊 Trading Pairs")
+        selected_pairs = st.multiselect(
+            "Select pairs to scan",
+            usdt_pairs[:50],
+            default=usdt_pairs[:10] if usdt_pairs else [],
+            help="Choose which trading pairs to monitor"
+        )
+        
+        st.markdown("### ⏱️ Timeframes")
+        selected_timeframes = st.multiselect(
+            "Select timeframes",
+            ['3m', '5m', '15m', '1h', '4h'],
+            default=['5m', '15m', '1h'],
+            help="Choose which timeframes to analyze"
+        )
+        
+        st.markdown("### 🔄 Auto-Refresh")
+        auto_refresh = st.toggle(
+            "Enable auto-refresh (60s)",
+            value=st.session_state.auto_refresh_enabled,
+            help="Automatically scan markets every 60 seconds"
+        )
+        st.session_state.auto_refresh_enabled = auto_refresh
+    
+    # Large scan button for mobile
+    scan_button = st.button("🔍 SCAN MARKETS NOW", type="primary", use_container_width=True)
+    
+    # Metrics row - Mobile responsive
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("🎯 Signals", len(st.session_state.signals))
+    with col2:
+        st.metric("📡 Exchange", "MEXC")
+    with col3:
+        if st.session_state.last_update:
+            update_time = st.session_state.last_update.strftime("%H:%M")
+            st.metric("🕐 Updated", update_time)
+        else:
+            st.metric("🕐 Updated", "Never")
+    
+    st.divider()
+    
+    # Scan markets
+    if scan_button or (not st.session_state.signals and selected_pairs):
+        if not selected_pairs:
+            st.warning("⚠️ Please select at least one trading pair in settings")
+        elif not selected_timeframes:
+            st.warning("⚠️ Please select at least one timeframe in settings")
+        else:
+            with st.spinner("🔍 Scanning markets..."):
+                signals = scan_markets(exchange, selected_pairs, selected_timeframes)
+                st.session_state.signals = signals
+                st.session_state.last_update = datetime.now()
+                st.rerun()
+    
+    # Display signals - Mobile optimized
+    if st.session_state.signals:
+        st.markdown(f"### 📊 {len(st.session_state.signals)} Active Signals")
+        
+        for idx, signal in enumerate(st.session_state.signals):
+            # Determine card color
+            if signal['type'] == 'BULLISH':
+                card_color = "#10b981"
+                card_gradient = "linear-gradient(135deg, #10b981 0%, #059669 100%)"
+            elif signal['type'] == 'BEARISH':
+                card_color = "#ef4444"
+                card_gradient = "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
+            elif signal['type'] == 'STRONG':
+                card_color = "#8b5cf6"
+                card_gradient = "linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)"
+            elif signal['type'] == 'WARNING':
+                card_color = "#f59e0b"
+                card_gradient = "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
+            else:
+                card_color = "#3b82f6"
+                card_gradient = "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)"
+            
+            # Signal card
+            st.markdown(f"""
+            <div style="background: {card_gradient}; 
+                        padding: 1.5rem; 
+                        border-radius: 15px; 
+                        margin-bottom: 1.5rem; 
+                        color: white;
+                        box-shadow: 0 8px 16px rgba(0,0,0,0.2);">
+                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
+                    <div>
+                        <h2 style="margin: 0; font-size: 1.5rem;">{signal['symbol']}</h2>
+                        <p style="margin: 0.5rem 0; font-size: 1.1rem; opacity: 0.95;">{signal['pattern']}</p>
+                        <span style="background: rgba(255,255,255,0.2); 
+                                     padding: 0.3rem 0.8rem; 
+                                     border-radius: 20px; 
+                                     font-size: 0.85rem;
+                                     display: inline-block;">
+                            {signal['timeframe']}
+                        </span>
+                    </div>
+                    <div style="text-align: right;">
+                        <p style="margin: 0; font-weight: bold; font-size: 1.3rem;">
+                            ${signal['price']:.4f}
+                        </p>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Indicators - Mobile friendly
+            col1, col2 = st.columns(2)
+            with col1:
+                rsi_status = "🔴 Overbought" if signal['rsi'] > 70 else "🟢 Oversold" if signal['rsi'] < 30 else "🟡 Neutral"
+                st.info(f"**RSI:** {signal['rsi']:.1f}\n\n{rsi_status}")
+            with col2:
+                vwap_status = "✅ Above" if signal['vwap_diff'] > 0 else "⚠️ Below"
+                st.info(f"**VWAP:** {signal['vwap_diff']:.2f}%\n\n{vwap_status}")
+            
+            # Reasoning
+            st.success(f"**💡 Analysis:** {signal['reasoning']}")
+            
+            if idx < len(st.session_state.signals) - 1:
+                st.divider()
+    else:
+        # Empty state - Mobile friendly
+        st.info("👆 Tap **SCAN MARKETS NOW** to find trading signals")
+        st.markdown("""
+        ### 🚀 Quick Start
+        1. Open **⚙️ SETTINGS** above
+        2. Select your favorite trading pairs
+        3. Choose timeframes to scan
+        4. Tap the scan button
+        
+        💡 **Tip:** Enable auto-refresh to get updates every 60 seconds!
+        """)
+    
+    # Footer
+    st.divider()
+    st.caption("📊 Timeframes: 3m • 5m • 15m • 1h • 4h")
+    st.caption("📈 Indicators: SMA 20/200 • RSI • VWAP")
+    st.caption("🔄 Auto-refresh updates every 60 seconds when enabled")
+
+if __name__ == "__main__":
+    main()
