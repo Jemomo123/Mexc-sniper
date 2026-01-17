@@ -134,7 +134,6 @@ def init_exchange():
         return None
 
 # Fetch OHLCV data
-@st.cache_data(ttl=60)
 def fetch_ohlcv(exchange, symbol, timeframe, limit=200):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
