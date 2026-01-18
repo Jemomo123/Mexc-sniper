@@ -1,3 +1,4 @@
+# Version 16 - Multi-Exchange Scanner with 120 Coins
 import streamlit as st
 import ccxt
 import pandas as pd
@@ -7,7 +8,7 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 import time
 
-st.set_page_config(page_title="MEXC Pro Scanner", page_icon="🎯", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Multi-Exchange Pro Scanner", page_icon="🎯", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
@@ -41,13 +42,18 @@ if st.session_state.auto_refresh_enabled:
     st_autorefresh(interval=60000, key="datarefresh")
 
 @st.cache_resource
-def init_exchange():
+def init_exchange(exchange_name='mexc'):
     try:
-        exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'spot'}, 'timeout': 30000})
-        return exchange
+        if exchange_name == 'mexc':
+            exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'spot'}, 'timeout': 30000})
+        elif exchange_name == 'gateio':
+            exchange = ccxt.gateio({'enableRateLimit': True, 'options': {'defaultType': 'spot'}, 'timeout': 30000})
+        else:
+            exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'spot'}, 'timeout': 30000})
+        return exchange, exchange_name
     except Exception as e:
-        st.error(f"❌ Failed to initialize MEXC: {e}")
-        return None
+        st.error(f"❌ Failed to initialize {exchange_name.upper()}: {e}")
+        return None, None
 
 def fetch_ohlcv(exchange, symbol, timeframe, limit=200):
     try:
@@ -116,7 +122,6 @@ def detect_signals(df, symbol, timeframe, liquidity_data):
     if pd.isna(latest['sma_20']) or pd.isna(latest['sma_200']) or pd.isna(latest['rsi']) or pd.isna(latest['vwap']):
         return []
     
-    # Calculate conditions
     sma_diff_pct = abs(latest['sma_20'] - latest['sma_200']) / latest['sma_200'] * 100
     squeeze_detected = sma_diff_pct < 0.5
     
@@ -208,7 +213,7 @@ def detect_signals(df, symbol, timeframe, liquidity_data):
             'warning': warning
         })
     
-    # Strategy 3: Failed Cross (UP) - Bullish rejection at 200 SMA
+    # Strategy 3: Failed Cross (UP)
     if not pd.isna(prev['sma_200']):
         if prev['low'] <= prev['sma_200'] and latest['close'] > latest['sma_200'] and latest['close'] > latest['open']:
             vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_above'] else "STANDARD"
@@ -227,7 +232,7 @@ def detect_signals(df, symbol, timeframe, liquidity_data):
                 'warning': warning
             })
     
-    # Strategy 3: Deadly Rejection (DOWN) - Bearish rejection at 200 SMA
+    # Strategy 3: Deadly Rejection (DOWN)
     if not pd.isna(prev['sma_200']):
         if prev['high'] >= prev['sma_200'] and latest['close'] < latest['sma_200'] and latest['close'] < latest['open']:
             vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_below'] else "STANDARD"
@@ -286,95 +291,134 @@ def detect_signals(df, symbol, timeframe, liquidity_data):
     
     return signals
 
-def scan_markets(exchange, symbols, timeframes):
+def scan_markets(exchanges_to_scan, symbols, timeframes):
     all_signals = []
     progress_bar = st.progress(0)
     status_text = st.empty()
-    total_scans = len(symbols) * len(timeframes)
+    
+    total_scans = len(exchanges_to_scan) * len(symbols) * len(timeframes)
     current_scan = 0
     
-    for symbol in symbols:
-        liquidity_data = check_liquidity(exchange, symbol)
-        for timeframe in timeframes:
-            current_scan += 1
-            progress_bar.progress(current_scan / total_scans)
-            status_text.text(f"📡 Scanning {symbol} on {timeframe}...")
-            try:
-                df = fetch_ohlcv(exchange, symbol, timeframe)
-                if df is not None:
-                    df = calculate_indicators(df)
+    for exchange, exchange_name in exchanges_to_scan:
+        for symbol in symbols:
+            liquidity_data = check_liquidity(exchange, symbol)
+            for timeframe in timeframes:
+                current_scan += 1
+                progress_bar.progress(current_scan / total_scans)
+                status_text.text(f"📡 [{exchange_name}] Scanning {symbol} on {timeframe}...")
+                try:
+                    df = fetch_ohlcv(exchange, symbol, timeframe)
                     if df is not None:
-                        signals = detect_signals(df, symbol, timeframe, liquidity_data)
-                        all_signals.extend(signals)
-            except:
-                continue
-            time.sleep(0.1)
+                        df = calculate_indicators(df)
+                        if df is not None:
+                            signals = detect_signals(df, symbol, timeframe, liquidity_data)
+                            for sig in signals:
+                                sig['exchange'] = exchange_name
+                            all_signals.extend(signals)
+                except:
+                    continue
+                time.sleep(0.05)
     
     progress_bar.empty()
     status_text.empty()
     return all_signals
 
 def main():
-    st.markdown("# 🎯 MEXC Pro Scanner")
-    st.caption("📱 16-Opportunity Trading System")
+    st.markdown("# 🎯 Multi-Exchange Pro Scanner")
+    st.caption("📱 16-Opportunity Trading System | MEXC + Gate.io")
     
-    exchange = init_exchange()
-    if exchange is None:
-        st.error("❌ Failed to connect to MEXC")
+    col1, col2 = st.columns(2)
+    with col1:
+        use_mexc = st.checkbox("📊 MEXC", value=True)
+    with col2:
+        use_gateio = st.checkbox("📊 Gate.io", value=False)
+    
+    if not use_mexc and not use_gateio:
+        st.warning("⚠️ Please select at least one exchange")
         st.stop()
+    
+    exchanges_to_scan = []
+    if use_mexc:
+        exchange_mexc, name_mexc = init_exchange('mexc')
+        if exchange_mexc:
+            exchanges_to_scan.append((exchange_mexc, 'MEXC'))
+    if use_gateio:
+        exchange_gate, name_gate = init_exchange('gateio')
+        if exchange_gate:
+            exchanges_to_scan.append((exchange_gate, 'Gate.io'))
+    
+    if not exchanges_to_scan:
+        st.error("❌ Failed to connect to exchanges")
+        st.stop()
+    
+    exchange = exchanges_to_scan[0][0]
     
     with st.expander("⚙️ SETTINGS", expanded=False):
         try:
             markets = exchange.load_markets()
             usdt_pairs = [s for s in markets.keys() if s.endswith('/USDT') and markets[s]['active']]
             
-            # Top 20 established coins
-            top_20 = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 
+            top_40 = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 
                       'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'MATIC/USDT', 'LINK/USDT', 'UNI/USDT',
                       'LTC/USDT', 'ATOM/USDT', 'XLM/USDT', 'ALGO/USDT', 'VET/USDT', 'ICP/USDT',
-                      'FIL/USDT', 'HBAR/USDT']
+                      'FIL/USDT', 'HBAR/USDT', 'APT/USDT', 'ARB/USDT', 'OP/USDT', 'SUI/USDT',
+                      'TIA/USDT', 'SEI/USDT', 'INJ/USDT', 'STX/USDT', 'RUNE/USDT', 'FTM/USDT',
+                      'NEAR/USDT', 'AAVE/USDT', 'MKR/USDT', 'SNX/USDT', 'CRV/USDT', 'LDO/USDT',
+                      'IMX/USDT', 'SAND/USDT', 'MANA/USDT', 'AXS/USDT']
             
-            # Established memecoins
             memecoins = ['PEPE/USDT', 'SHIB/USDT', 'FLOKI/USDT', 'BONK/USDT', 'WIF/USDT', 
                         'DOGE/USDT', 'MEME/USDT', 'WOJAK/USDT', 'TURBO/USDT', 'PEPE2/USDT',
-                        'LADYS/USDT', 'BABYDOGE/USDT', 'ELON/USDT', 'KISHU/USDT', 'AKITA/USDT']
+                        'LADYS/USDT', 'BABYDOGE/USDT', 'ELON/USDT', 'KISHU/USDT', 'AKITA/USDT',
+                        'SAMO/USDT', 'HOGE/USDT', 'SHIBAI/USDT', 'VOLT/USDT', 'CHEEMS/USDT',
+                        'GROK/USDT', 'MYRO/USDT', 'MONG/USDT', 'NEIRO/USDT', 'MOG/USDT',
+                        'TOSHI/USDT', 'BRETT/USDT', 'DEGEN/USDT', 'MEW/USDT', 'POPCAT/USDT',
+                        'DOGS/USDT', 'NUBS/USDT', 'HAMMY/USDT', 'BONE/USDT', 'LEASH/USDT',
+                        'SATS/USDT', 'RATS/USDT', 'ORDI/USDT', 'DORK/USDT', 'PONKE/USDT',
+                        'BOZO/USDT', 'CATWIF/USDT', 'HOBBES/USDT', 'TRAC/USDT', 'BILLY/USDT',
+                        'MAGA/USDT', 'BODEN/USDT', 'TREMP/USDT', 'COUPE/USDT', 'BITCOIN/USDT']
             
-            # Filter to only pairs that exist on MEXC
-            top_20_available = [p for p in top_20 if p in usdt_pairs]
+            trending = ['WLD/USDT', 'PYTH/USDT', 'JUP/USDT', 'STRK/USDT', 'DYM/USDT',
+                       'PORTAL/USDT', 'ACE/USDT', 'NFP/USDT', 'AI/USDT', 'XAI/USDT',
+                       'MANTA/USDT', 'ALT/USDT', 'JTO/USDT', 'PIXEL/USDT', 'SAGA/USDT',
+                       'OMNI/USDT', 'MERL/USDT', 'REZ/USDT', 'BB/USDT', 'IO/USDT',
+                       'ZK/USDT', 'ZRO/USDT', 'G/USDT', 'LISTA/USDT', 'BANANA/USDT',
+                       'RENDER/USDT', 'FET/USDT', 'AGIX/USDT', 'OCEAN/USDT', 'GRT/USDT']
+            
+            top_40_available = [p for p in top_40 if p in usdt_pairs]
             memecoins_available = [p for p in memecoins if p in usdt_pairs]
+            trending_available = [p for p in trending if p in usdt_pairs]
             
-            # New listings (coins listed in last 90 days - approximation: coins with low volume or newer)
-            all_other = [p for p in usdt_pairs if p not in top_20_available and p not in memecoins_available]
-            
-            # Default selection: Top 20 + Established memes
-            default_selection = top_20_available[:20] + memecoins_available[:15]
+            default_120 = (top_40_available + memecoins_available + trending_available)[:120]
             
         except:
             usdt_pairs = []
-            default_selection = []
+            default_120 = []
             st.error("Failed to load markets")
         
         st.markdown("### 📊 Trading Pairs")
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("📈 Select Top 20", use_container_width=True):
-                st.session_state.selected_pairs = top_20_available[:20]
+            if st.button("📈 Top 40", use_container_width=True):
+                st.session_state.selected_pairs = top_40_available
         with col2:
-            if st.button("🐸 Select Memecoins", use_container_width=True):
+            if st.button("🐸 Memes", use_container_width=True):
                 st.session_state.selected_pairs = memecoins_available
+        with col3:
+            if st.button("🔥 Trending", use_container_width=True):
+                st.session_state.selected_pairs = trending_available
         
-        if st.button("⭐ Select Top 20 + Memes (Recommended)", use_container_width=True):
-            st.session_state.selected_pairs = default_selection
+        if st.button("⭐ ALL 120 COINS (Recommended)", use_container_width=True, type="primary"):
+            st.session_state.selected_pairs = default_120
         
         if 'selected_pairs' not in st.session_state:
-            st.session_state.selected_pairs = default_selection
+            st.session_state.selected_pairs = default_120
         
         selected_pairs = st.multiselect(
-            "Or manually select pairs", 
+            f"Selected: {len(st.session_state.selected_pairs)} pairs", 
             usdt_pairs, 
             default=st.session_state.selected_pairs,
-            help="Top 20 coins + Established memes are recommended"
+            help="120 coins = Max signal detection"
         )
         
         st.markdown("### ⏱️ Timeframes")
@@ -390,7 +434,12 @@ def main():
     with col1:
         st.metric("🎯 Signals", len(st.session_state.signals))
     with col2:
-        st.metric("📡 Exchange", "MEXC")
+        active_exchanges = []
+        if use_mexc:
+            active_exchanges.append("MEXC")
+        if use_gateio:
+            active_exchanges.append("Gate")
+        st.metric("📡 Exchanges", " + ".join(active_exchanges))
     with col3:
         if st.session_state.last_update:
             st.metric("🕐 Updated", st.session_state.last_update.strftime("%H:%M"))
@@ -406,7 +455,7 @@ def main():
             st.warning("⚠️ Select at least one timeframe")
         else:
             with st.spinner("🔍 Scanning..."):
-                signals = scan_markets(exchange, selected_pairs, selected_timeframes)
+                signals = scan_markets(exchanges_to_scan, selected_pairs, selected_timeframes)
                 st.session_state.signals = signals
                 st.session_state.last_update = datetime.now()
                 st.rerun()
@@ -420,7 +469,7 @@ def main():
             st.markdown(f"""
             <div style="background: linear-gradient(135deg, {direction_color} 0%, {direction_color}dd 100%); 
                         padding: 1.2rem; border-radius: 12px; margin-bottom: 1rem; color: white;">
-                <h3 style="margin: 0;">{signal['symbol']} - {signal['timeframe']}</h3>
+                <h3 style="margin: 0;">{signal['exchange']} | {signal['symbol']} - {signal['timeframe']}</h3>
                 <p style="margin: 0.5rem 0; font-size: 1.1rem; font-weight: bold;">{signal['strategy']}</p>
                 <p style="margin: 0; font-size: 1.2rem;">Price: ${signal['price']:.4f}</p>
             </div>
@@ -436,17 +485,4 @@ def main():
             with col1:
                 st.text(f"✓ Trend: {conditions['Trend']}")
                 st.text(f"✓ Squeeze: {conditions['Squeeze Status']}")
-                st.text(f"✓ Momentum: {conditions['Momentum']}")
-            with col2:
-                st.text(f"✓ Value: {conditions['Value']}")
-                st.text(f"✓ Vacuum: {conditions['Vacuum']}")
-            
-            st.divider()
-    else:
-        st.info("👆 Tap **SCAN NOW** to find opportunities")
-    
-    st.divider()
-    st.caption("📊 4 Strategies × 2 Directions × 2 Liquidity States = 16 Opportunities")
-
-if __name__ == "__main__":
-    main()
+                st.text(f
