@@ -327,13 +327,55 @@ def main():
         try:
             markets = exchange.load_markets()
             usdt_pairs = [s for s in markets.keys() if s.endswith('/USDT') and markets[s]['active']]
-            usdt_pairs.sort()
+            
+            # Top 20 established coins
+            top_20 = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 
+                      'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'MATIC/USDT', 'LINK/USDT', 'UNI/USDT',
+                      'LTC/USDT', 'ATOM/USDT', 'XLM/USDT', 'ALGO/USDT', 'VET/USDT', 'ICP/USDT',
+                      'FIL/USDT', 'HBAR/USDT']
+            
+            # Established memecoins
+            memecoins = ['PEPE/USDT', 'SHIB/USDT', 'FLOKI/USDT', 'BONK/USDT', 'WIF/USDT', 
+                        'DOGE/USDT', 'MEME/USDT', 'WOJAK/USDT', 'TURBO/USDT', 'PEPE2/USDT',
+                        'LADYS/USDT', 'BABYDOGE/USDT', 'ELON/USDT', 'KISHU/USDT', 'AKITA/USDT']
+            
+            # Filter to only pairs that exist on MEXC
+            top_20_available = [p for p in top_20 if p in usdt_pairs]
+            memecoins_available = [p for p in memecoins if p in usdt_pairs]
+            
+            # New listings (coins listed in last 90 days - approximation: coins with low volume or newer)
+            all_other = [p for p in usdt_pairs if p not in top_20_available and p not in memecoins_available]
+            
+            # Default selection: Top 20 + Established memes
+            default_selection = top_20_available[:20] + memecoins_available[:15]
+            
         except:
             usdt_pairs = []
+            default_selection = []
             st.error("Failed to load markets")
         
         st.markdown("### 📊 Trading Pairs")
-        selected_pairs = st.multiselect("Select pairs", usdt_pairs[:50], default=usdt_pairs[:10] if usdt_pairs else [])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📈 Select Top 20", use_container_width=True):
+                st.session_state.selected_pairs = top_20_available[:20]
+        with col2:
+            if st.button("🐸 Select Memecoins", use_container_width=True):
+                st.session_state.selected_pairs = memecoins_available
+        
+        if st.button("⭐ Select Top 20 + Memes (Recommended)", use_container_width=True):
+            st.session_state.selected_pairs = default_selection
+        
+        if 'selected_pairs' not in st.session_state:
+            st.session_state.selected_pairs = default_selection
+        
+        selected_pairs = st.multiselect(
+            "Or manually select pairs", 
+            usdt_pairs, 
+            default=st.session_state.selected_pairs,
+            help="Top 20 coins + Established memes are recommended"
+        )
         
         st.markdown("### ⏱️ Timeframes")
         selected_timeframes = st.multiselect("Select timeframes", ['3m', '5m', '15m', '1h', '4h'], default=['5m', '15m', '1h'])
