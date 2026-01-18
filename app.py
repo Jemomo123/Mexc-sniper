@@ -7,107 +7,29 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 import time
 
-# Page config - Mobile optimized
-st.set_page_config(
-    page_title="MEXC Sniper",
-    page_icon="🎯",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="MEXC Pro Scanner", page_icon="🎯", layout="wide", initial_sidebar_state="collapsed")
 
-# Enhanced CSS for mobile browsers
 st.markdown("""
 <style>
-    /* Mobile-first responsive design */
-    .main {
-        padding: 0.5rem !important;
-        max-width: 100% !important;
-    }
-    
-    /* Remove Streamlit branding for cleaner mobile view */
+    .main {padding: 0.5rem !important; max-width: 100% !important;}
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    
-    /* Optimize for mobile touch */
-    .stButton>button {
-        width: 100%;
-        border-radius: 12px;
-        height: 3.5em;
-        font-weight: bold;
-        font-size: 1rem;
-        margin: 0.5rem 0;
-        touch-action: manipulation;
-    }
-    
-    /* Mobile-friendly metrics */
-    div[data-testid="stMetricValue"] {
-        font-size: 1.5rem;
-        font-weight: bold;
-    }
-    
-    div[data-testid="stMetricLabel"] {
-        font-size: 0.9rem;
-    }
-    
-    /* Signal cards optimized for mobile */
-    .signal-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.2rem;
-        border-radius: 15px;
-        margin-bottom: 1rem;
-        color: white;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        touch-action: manipulation;
-    }
-    
-    /* Responsive columns for mobile */
+    .stButton>button {width: 100%; border-radius: 12px; height: 3.5em; font-weight: bold; font-size: 1rem; margin: 0.5rem 0;}
+    div[data-testid="stMetricValue"] {font-size: 1.5rem; font-weight: bold;}
+    div[data-testid="stMetricLabel"] {font-size: 0.9rem;}
     @media (max-width: 768px) {
-        .row-widget.stHorizontal {
-            flex-direction: column !important;
-        }
-        
-        div[data-testid="column"] {
-            width: 100% !important;
-            margin-bottom: 1rem;
-        }
-        
-        .stButton>button {
-            font-size: 1.1rem;
-            height: 4em;
-        }
+        .row-widget.stHorizontal {flex-direction: column !important;}
+        div[data-testid="column"] {width: 100% !important; margin-bottom: 1rem;}
+        .stButton>button {font-size: 1.1rem; height: 4em;}
     }
-    
-    /* Larger touch targets for mobile */
-    .stSelectbox, .stMultiselect {
-        font-size: 1rem;
-    }
-    
-    /* Better spacing for mobile */
-    .element-container {
-        margin-bottom: 1rem;
-    }
-    
-    /* Sticky header for mobile scrolling */
-    div[data-testid="stMetricDelta"] {
-        display: none;
-    }
-    
-    /* Improve readability on small screens */
-    p, div, span, label {
-        line-height: 1.6;
-    }
-    
-    /* Hide sidebar toggle on mobile for cleaner UI */
-    @media (max-width: 768px) {
-        section[data-testid="stSidebar"] {
-            width: 100% !important;
-        }
-    }
+    .stSelectbox, .stMultiselect {font-size: 1rem;}
+    .element-container {margin-bottom: 1rem;}
+    div[data-testid="stMetricDelta"] {display: none;}
+    p, div, span, label {line-height: 1.6;}
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
 if 'signals' not in st.session_state:
     st.session_state.signals = []
 if 'last_update' not in st.session_state:
@@ -115,25 +37,18 @@ if 'last_update' not in st.session_state:
 if 'auto_refresh_enabled' not in st.session_state:
     st.session_state.auto_refresh_enabled = True
 
-# Conditional auto-refresh based on user preference
 if st.session_state.auto_refresh_enabled:
     st_autorefresh(interval=60000, key="datarefresh")
 
-# Initialize MEXC exchange
 @st.cache_resource
 def init_exchange():
     try:
-        exchange = ccxt.mexc({
-            'enableRateLimit': True,
-            'options': {'defaultType': 'spot'},
-            'timeout': 30000
-        })
+        exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'spot'}, 'timeout': 30000})
         return exchange
     except Exception as e:
         st.error(f"❌ Failed to initialize MEXC: {e}")
         return None
 
-# Fetch OHLCV data
 def fetch_ohlcv(exchange, symbol, timeframe, limit=200):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -141,167 +56,34 @@ def fetch_ohlcv(exchange, symbol, timeframe, limit=200):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         return df
-    except Exception as e:
+    except:
         return None
 
-# Calculate indicators
 def calculate_indicators(df):
     if df is None or len(df) < 200:
         return None
-    
     try:
-        # SMA
         df['sma_20'] = ta.sma(df['close'], length=20)
         df['sma_200'] = ta.sma(df['close'], length=200)
-        
-        # RSI
         df['rsi'] = ta.rsi(df['close'], length=14)
-        
-        # VWAP - Now with proper DatetimeIndex
         df['vwap'] = ta.vwap(df['high'], df['low'], df['close'], df['volume'])
-        
-        # Average range for Elephant Bar detection
         df['range'] = df['high'] - df['low']
         df['avg_range'] = df['range'].rolling(20).mean()
         df['body'] = abs(df['close'] - df['open'])
-        
-        # Fill NaN values for VWAP if needed
         if df['vwap'].isna().all():
             df['vwap'] = df['close']
         else:
             df['vwap'].fillna(method='ffill', inplace=True)
             df['vwap'].fillna(method='bfill', inplace=True)
-        
         return df
-    except Exception as e:
+    except:
         return None
 
-# Detect patterns
-def detect_patterns(df, symbol, timeframe):
-    if df is None or len(df) < 200:
-        return []
-    
-    signals = []
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-    
-    # Check for None values
-    if pd.isna(latest['sma_20']) or pd.isna(latest['sma_200']) or pd.isna(latest['rsi']) or pd.isna(latest['vwap']):
-        return []
-    
-    # Golden Cross
-    if not pd.isna(prev['sma_20']) and not pd.isna(prev['sma_200']):
-        if prev['sma_20'] <= prev['sma_200'] and latest['sma_20'] > latest['sma_200']:
-            signals.append({
-                'symbol': symbol,
-                'timeframe': timeframe,
-                'pattern': '🌟 Golden Cross',
-                'type': 'BULLISH',
-                'price': latest['close'],
-                'rsi': latest['rsi'],
-                'vwap_diff': ((latest['close'] - latest['vwap']) / latest['vwap'] * 100),
-                'reasoning': 'SMA 20 crossed above SMA 200. Strong bullish momentum building.'
-            })
-    
-    # Death Cross
-    if not pd.isna(prev['sma_20']) and not pd.isna(prev['sma_200']):
-        if prev['sma_20'] >= prev['sma_200'] and latest['sma_20'] < latest['sma_200']:
-            signals.append({
-                'symbol': symbol,
-                'timeframe': timeframe,
-                'pattern': '💀 Death Cross',
-                'type': 'BEARISH',
-                'price': latest['close'],
-                'rsi': latest['rsi'],
-                'vwap_diff': ((latest['close'] - latest['vwap']) / latest['vwap'] * 100),
-                'reasoning': 'SMA 20 crossed below SMA 200. Bearish pressure increasing.'
-            })
-    
-    # SMA Squeeze
-    sma_diff = abs(latest['sma_20'] - latest['sma_200']) / latest['sma_200'] * 100
-    if sma_diff < 0.3:
-        signals.append({
-            'symbol': symbol,
-            'timeframe': timeframe,
-            'pattern': '🔥 SMA Squeeze',
-            'type': 'NEUTRAL',
-            'price': latest['close'],
-            'rsi': latest['rsi'],
-            'vwap_diff': ((latest['close'] - latest['vwap']) / latest['vwap'] * 100),
-            'reasoning': f'SMAs converging within {sma_diff:.2f}%. Breakout imminent.'
-        })
-    
-    # Kiss of Life
-    if not pd.isna(prev['sma_200']):
-        if (prev['low'] <= prev['sma_200'] and latest['close'] > latest['sma_200'] and 
-            latest['close'] > latest['open']):
-            signals.append({
-                'symbol': symbol,
-                'timeframe': timeframe,
-                'pattern': '💚 Kiss of Life',
-                'type': 'BULLISH',
-                'price': latest['close'],
-                'rsi': latest['rsi'],
-                'vwap_diff': ((latest['close'] - latest['vwap']) / latest['vwap'] * 100),
-                'reasoning': 'Price rejected at 200 SMA support. Bullish bounce expected.'
-            })
-    
-    # Kiss of Death
-    if not pd.isna(prev['sma_200']):
-        if (prev['high'] >= prev['sma_200'] and latest['close'] < latest['sma_200'] and 
-            latest['close'] < latest['open']):
-            signals.append({
-                'symbol': symbol,
-                'timeframe': timeframe,
-                'pattern': '🔴 Kiss of Death',
-                'type': 'BEARISH',
-                'price': latest['close'],
-                'rsi': latest['rsi'],
-                'vwap_diff': ((latest['close'] - latest['vwap']) / latest['vwap'] * 100),
-                'reasoning': 'Price rejected at 200 SMA resistance. Bearish reversal likely.'
-            })
-    
-    # Divergence
-    if not pd.isna(prev['sma_20']) and not pd.isna(prev['sma_200']):
-        prev_diff = abs(prev['sma_20'] - prev['sma_200'])
-        curr_diff = abs(latest['sma_20'] - latest['sma_200'])
-        if curr_diff > prev_diff * 1.5 and sma_diff > 1.0:
-            direction = 'bullish' if latest['sma_20'] > latest['sma_200'] else 'bearish'
-            signals.append({
-                'symbol': symbol,
-                'timeframe': timeframe,
-                'pattern': '📊 Divergence',
-                'type': 'NEUTRAL',
-                'price': latest['close'],
-                'rsi': latest['rsi'],
-                'vwap_diff': ((latest['close'] - latest['vwap']) / latest['vwap'] * 100),
-                'reasoning': f'SMA 20 pulling away from SMA 200. {direction.capitalize()} trend accelerating.'
-            })
-    
-    # Elephant Bar
-    if not pd.isna(latest['avg_range']):
-        if (latest['range'] > latest['avg_range'] * 2.5 and 
-            latest['body'] > latest['range'] * 0.75):
-            signals.append({
-                'symbol': symbol,
-                'timeframe': timeframe,
-                'pattern': '🐘 Elephant Bar',
-                'type': 'STRONG',
-                'price': latest['close'],
-                'rsi': latest['rsi'],
-                'vwap_diff': ((latest['close'] - latest['vwap']) / latest['vwap'] * 100),
-                'reasoning': 'Massive volume bar detected (>2.5x avg). Strong directional move.'
-            })
-    
-    return signals
-
-# Check liquidity holes
-def check_liquidity_hole(exchange, symbol):
+def check_liquidity(exchange, symbol):
     try:
         orderbook = exchange.fetch_order_book(symbol)
         ohlcv_1m = exchange.fetch_ohlcv(symbol, '1m', limit=20)
         avg_volume_1m = np.mean([candle[5] for candle in ohlcv_1m])
-        
         mid_price = (orderbook['bids'][0][0] + orderbook['asks'][0][0]) / 2
         threshold = mid_price * 0.005
         
@@ -309,112 +91,259 @@ def check_liquidity_hole(exchange, symbol):
         ask_depth = sum([ask[1] for ask in orderbook['asks'] if ask[0] <= mid_price + threshold])
         total_depth = bid_depth + ask_depth
         
-        if total_depth < avg_volume_1m * 0.2:
-            return True, total_depth, avg_volume_1m
+        depth_threshold = avg_volume_1m * 0.2
+        hole_above = ask_depth < depth_threshold
+        hole_below = bid_depth < depth_threshold
         
-        return False, total_depth, avg_volume_1m
+        return {
+            'hole_above': hole_above,
+            'hole_below': hole_below,
+            'bid_depth': bid_depth,
+            'ask_depth': ask_depth,
+            'avg_volume': avg_volume_1m
+        }
     except:
-        return False, 0, 0
+        return {'hole_above': False, 'hole_below': False, 'bid_depth': 0, 'ask_depth': 0, 'avg_volume': 0}
 
-# Main scanning function
+def detect_signals(df, symbol, timeframe, liquidity_data):
+    if df is None or len(df) < 200:
+        return []
+    
+    signals = []
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    if pd.isna(latest['sma_20']) or pd.isna(latest['sma_200']) or pd.isna(latest['rsi']) or pd.isna(latest['vwap']):
+        return []
+    
+    # Calculate conditions
+    sma_diff_pct = abs(latest['sma_20'] - latest['sma_200']) / latest['sma_200'] * 100
+    squeeze_detected = sma_diff_pct < 0.5
+    
+    prev_diff = abs(prev['sma_20'] - prev['sma_200'])
+    curr_diff = abs(latest['sma_20'] - latest['sma_200'])
+    divergence_detected = curr_diff > prev_diff * 1.5 and sma_diff_pct > 1.0
+    
+    elephant_bar = False
+    if not pd.isna(latest['avg_range']):
+        elephant_bar = (latest['range'] > latest['avg_range'] * 2.5 and latest['body'] > latest['range'] * 0.75)
+    
+    is_bullish_elephant = elephant_bar and latest['close'] > latest['open']
+    is_bearish_elephant = elephant_bar and latest['close'] < latest['open']
+    
+    sma20_above_200 = latest['sma_20'] > latest['sma_200']
+    price_above_vwap = latest['close'] > latest['vwap']
+    
+    # Strategy 1: Goliath Breakout (UP)
+    if not pd.isna(prev['sma_20']) and not pd.isna(prev['sma_200']):
+        if prev['sma_20'] <= prev['sma_200'] and latest['sma_20'] > latest['sma_200']:
+            vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_above'] else "STANDARD"
+            warning = "WARNING: THIN LIQUIDITY BELOW" if liquidity_data['hole_below'] else ""
+            signals.append({
+                'symbol': symbol, 'timeframe': timeframe,
+                'strategy': f"1. Goliath Breakout UP [{vacuum_label}]",
+                'direction': 'UP', 'price': latest['close'],
+                'conditions': {
+                    'Trend': 'SMA 20 Above 200',
+                    'Squeeze Status': 'Squeeze Detected' if squeeze_detected else 'No Squeeze',
+                    'Momentum': 'Elephant Bar Present' if elephant_bar else 'No Elephant Bar',
+                    'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP',
+                    'Vacuum': 'Vacuum Detected Above' if liquidity_data['hole_above'] else 'Order Depth Present'
+                },
+                'warning': warning
+            })
+    
+    # Strategy 1: Goliath Breakdown (DOWN)
+    if not pd.isna(prev['sma_20']) and not pd.isna(prev['sma_200']):
+        if prev['sma_20'] >= prev['sma_200'] and latest['sma_20'] < latest['sma_200']:
+            vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_below'] else "STANDARD"
+            warning = "WARNING: THIN LIQUIDITY ABOVE" if liquidity_data['hole_above'] else ""
+            signals.append({
+                'symbol': symbol, 'timeframe': timeframe,
+                'strategy': f"1. Goliath Breakdown DOWN [{vacuum_label}]",
+                'direction': 'DOWN', 'price': latest['close'],
+                'conditions': {
+                    'Trend': 'SMA 20 Below 200',
+                    'Squeeze Status': 'Squeeze Detected' if squeeze_detected else 'No Squeeze',
+                    'Momentum': 'Elephant Bar Present' if elephant_bar else 'No Elephant Bar',
+                    'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP',
+                    'Vacuum': 'Vacuum Detected Below' if liquidity_data['hole_below'] else 'Order Depth Present'
+                },
+                'warning': warning
+            })
+    
+    # Strategy 2: Goliath Launch (UP)
+    if sma20_above_200 and squeeze_detected and divergence_detected:
+        vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_above'] else "STANDARD"
+        warning = "WARNING: THIN LIQUIDITY BELOW" if liquidity_data['hole_below'] else ""
+        signals.append({
+            'symbol': symbol, 'timeframe': timeframe,
+            'strategy': f"2. Goliath Launch UP [{vacuum_label}]",
+            'direction': 'UP', 'price': latest['close'],
+            'conditions': {
+                'Trend': 'SMA 20 Above 200',
+                'Squeeze Status': 'Squeeze Detected',
+                'Momentum': 'Elephant Bar Present' if elephant_bar else 'No Elephant Bar',
+                'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP',
+                'Vacuum': 'Vacuum Detected Above' if liquidity_data['hole_above'] else 'Order Depth Present'
+            },
+            'warning': warning
+        })
+    
+    # Strategy 2: Goliath Drop (DOWN)
+    if not sma20_above_200 and squeeze_detected and divergence_detected:
+        vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_below'] else "STANDARD"
+        warning = "WARNING: THIN LIQUIDITY ABOVE" if liquidity_data['hole_above'] else ""
+        signals.append({
+            'symbol': symbol, 'timeframe': timeframe,
+            'strategy': f"2. Goliath Drop DOWN [{vacuum_label}]",
+            'direction': 'DOWN', 'price': latest['close'],
+            'conditions': {
+                'Trend': 'SMA 20 Below 200',
+                'Squeeze Status': 'Squeeze Detected',
+                'Momentum': 'Elephant Bar Present' if elephant_bar else 'No Elephant Bar',
+                'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP',
+                'Vacuum': 'Vacuum Detected Below' if liquidity_data['hole_below'] else 'Order Depth Present'
+            },
+            'warning': warning
+        })
+    
+    # Strategy 3: Failed Cross (UP) - Bullish rejection at 200 SMA
+    if not pd.isna(prev['sma_200']):
+        if prev['low'] <= prev['sma_200'] and latest['close'] > latest['sma_200'] and latest['close'] > latest['open']:
+            vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_above'] else "STANDARD"
+            warning = "WARNING: THIN LIQUIDITY BELOW" if liquidity_data['hole_below'] else ""
+            signals.append({
+                'symbol': symbol, 'timeframe': timeframe,
+                'strategy': f"3. Failed Cross UP [{vacuum_label}]",
+                'direction': 'UP', 'price': latest['close'],
+                'conditions': {
+                    'Trend': 'SMA 20 Above 200' if sma20_above_200 else 'SMA 20 Below 200',
+                    'Squeeze Status': 'Squeeze Detected' if squeeze_detected else 'No Squeeze',
+                    'Momentum': 'Elephant Bar Present' if elephant_bar else 'No Elephant Bar',
+                    'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP',
+                    'Vacuum': 'Vacuum Detected Above' if liquidity_data['hole_above'] else 'Order Depth Present'
+                },
+                'warning': warning
+            })
+    
+    # Strategy 3: Deadly Rejection (DOWN) - Bearish rejection at 200 SMA
+    if not pd.isna(prev['sma_200']):
+        if prev['high'] >= prev['sma_200'] and latest['close'] < latest['sma_200'] and latest['close'] < latest['open']:
+            vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_below'] else "STANDARD"
+            warning = "WARNING: THIN LIQUIDITY ABOVE" if liquidity_data['hole_above'] else ""
+            signals.append({
+                'symbol': symbol, 'timeframe': timeframe,
+                'strategy': f"3. Deadly Rejection DOWN [{vacuum_label}]",
+                'direction': 'DOWN', 'price': latest['close'],
+                'conditions': {
+                    'Trend': 'SMA 20 Above 200' if sma20_above_200 else 'SMA 20 Below 200',
+                    'Squeeze Status': 'Squeeze Detected' if squeeze_detected else 'No Squeeze',
+                    'Momentum': 'Elephant Bar Present' if elephant_bar else 'No Elephant Bar',
+                    'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP',
+                    'Vacuum': 'Vacuum Detected Below' if liquidity_data['hole_below'] else 'Order Depth Present'
+                },
+                'warning': warning
+            })
+    
+    # Strategy 4: Snap-Back Long (UP)
+    if latest['rsi'] < 25 and not pd.isna(prev['sma_200']):
+        if prev['low'] <= prev['sma_200'] and is_bullish_elephant:
+            vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_above'] else "STANDARD"
+            warning = "WARNING: THIN LIQUIDITY BELOW" if liquidity_data['hole_below'] else ""
+            signals.append({
+                'symbol': symbol, 'timeframe': timeframe,
+                'strategy': f"4. Snap-Back Long UP [{vacuum_label}]",
+                'direction': 'UP', 'price': latest['close'],
+                'conditions': {
+                    'Trend': 'SMA 20 Above 200' if sma20_above_200 else 'SMA 20 Below 200',
+                    'Squeeze Status': 'Squeeze Detected' if squeeze_detected else 'No Squeeze',
+                    'Momentum': 'Elephant Bar Present',
+                    'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP',
+                    'Vacuum': 'Vacuum Detected Above' if liquidity_data['hole_above'] else 'Order Depth Present'
+                },
+                'warning': warning
+            })
+    
+    # Strategy 4: Snap-Back Short (DOWN)
+    if latest['rsi'] > 75 and not pd.isna(prev['sma_200']):
+        if prev['high'] >= prev['sma_200'] and is_bearish_elephant:
+            vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_below'] else "STANDARD"
+            warning = "WARNING: THIN LIQUIDITY ABOVE" if liquidity_data['hole_above'] else ""
+            signals.append({
+                'symbol': symbol, 'timeframe': timeframe,
+                'strategy': f"4. Snap-Back Short DOWN [{vacuum_label}]",
+                'direction': 'DOWN', 'price': latest['close'],
+                'conditions': {
+                    'Trend': 'SMA 20 Above 200' if sma20_above_200 else 'SMA 20 Below 200',
+                    'Squeeze Status': 'Squeeze Detected' if squeeze_detected else 'No Squeeze',
+                    'Momentum': 'Elephant Bar Present',
+                    'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP',
+                    'Vacuum': 'Vacuum Detected Below' if liquidity_data['hole_below'] else 'Order Depth Present'
+                },
+                'warning': warning
+            })
+    
+    return signals
+
 def scan_markets(exchange, symbols, timeframes):
     all_signals = []
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
     total_scans = len(symbols) * len(timeframes)
     current_scan = 0
     
     for symbol in symbols:
+        liquidity_data = check_liquidity(exchange, symbol)
         for timeframe in timeframes:
             current_scan += 1
             progress_bar.progress(current_scan / total_scans)
             status_text.text(f"📡 Scanning {symbol} on {timeframe}...")
-            
             try:
                 df = fetch_ohlcv(exchange, symbol, timeframe)
                 if df is not None:
                     df = calculate_indicators(df)
                     if df is not None:
-                        signals = detect_patterns(df, symbol, timeframe)
+                        signals = detect_signals(df, symbol, timeframe, liquidity_data)
                         all_signals.extend(signals)
-            except Exception as e:
+            except:
                 continue
-            
             time.sleep(0.1)
-        
-        # Check liquidity holes
-        try:
-            has_hole, depth, avg_vol = check_liquidity_hole(exchange, symbol)
-            if has_hole:
-                all_signals.append({
-                    'symbol': symbol,
-                    'timeframe': 'ALL',
-                    'pattern': '🕳️ Liquidity Hole',
-                    'type': 'WARNING',
-                    'price': 0,
-                    'rsi': 0,
-                    'vwap_diff': 0,
-                    'reasoning': f'Thin order book. Depth: {depth:.2f}, Avg Vol: {avg_vol:.2f}. High volatility expected.'
-                })
-        except:
-            continue
     
     progress_bar.empty()
     status_text.empty()
-    
     return all_signals
 
-# Main app
 def main():
-    # Header - Mobile optimized
-    st.markdown("# 🎯 MEXC Prop Sniper")
-    st.caption("📱 Real-time market scanner optimized for mobile")
+    st.markdown("# 🎯 MEXC Pro Scanner")
+    st.caption("📱 16-Opportunity Trading System")
     
     exchange = init_exchange()
     if exchange is None:
-        st.error("❌ Failed to connect to MEXC. Please check your connection.")
+        st.error("❌ Failed to connect to MEXC")
         st.stop()
     
-    # Mobile-friendly expandable settings
     with st.expander("⚙️ SETTINGS", expanded=False):
-        # Fetch available USDT pairs
         try:
             markets = exchange.load_markets()
-            usdt_pairs = [symbol for symbol in markets.keys() if symbol.endswith('/USDT') and markets[symbol]['active']]
+            usdt_pairs = [s for s in markets.keys() if s.endswith('/USDT') and markets[s]['active']]
             usdt_pairs.sort()
         except:
             usdt_pairs = []
             st.error("Failed to load markets")
         
         st.markdown("### 📊 Trading Pairs")
-        selected_pairs = st.multiselect(
-            "Select pairs to scan",
-            usdt_pairs[:50],
-            default=usdt_pairs[:10] if usdt_pairs else [],
-            help="Choose which trading pairs to monitor"
-        )
+        selected_pairs = st.multiselect("Select pairs", usdt_pairs[:50], default=usdt_pairs[:10] if usdt_pairs else [])
         
         st.markdown("### ⏱️ Timeframes")
-        selected_timeframes = st.multiselect(
-            "Select timeframes",
-            ['3m', '5m', '15m', '1h', '4h'],
-            default=['5m', '15m', '1h'],
-            help="Choose which timeframes to analyze"
-        )
+        selected_timeframes = st.multiselect("Select timeframes", ['3m', '5m', '15m', '1h', '4h'], default=['5m', '15m', '1h'])
         
         st.markdown("### 🔄 Auto-Refresh")
-        auto_refresh = st.toggle(
-            "Enable auto-refresh (60s)",
-            value=st.session_state.auto_refresh_enabled,
-            help="Automatically scan markets every 60 seconds"
-        )
+        auto_refresh = st.toggle("Enable (60s)", value=st.session_state.auto_refresh_enabled)
         st.session_state.auto_refresh_enabled = auto_refresh
     
-    # Large scan button for mobile
-    scan_button = st.button("🔍 SCAN MARKETS NOW", type="primary", use_container_width=True)
+    scan_button = st.button("🔍 SCAN NOW", type="primary", use_container_width=True)
     
-    # Metrics row - Mobile responsive
     col1, col2, col3 = st.columns(3)
     with col1:
         st.metric("🎯 Signals", len(st.session_state.signals))
@@ -422,109 +351,60 @@ def main():
         st.metric("📡 Exchange", "MEXC")
     with col3:
         if st.session_state.last_update:
-            update_time = st.session_state.last_update.strftime("%H:%M")
-            st.metric("🕐 Updated", update_time)
+            st.metric("🕐 Updated", st.session_state.last_update.strftime("%H:%M"))
         else:
             st.metric("🕐 Updated", "Never")
     
     st.divider()
     
-    # Scan markets
     if scan_button or (not st.session_state.signals and selected_pairs):
         if not selected_pairs:
-            st.warning("⚠️ Please select at least one trading pair in settings")
+            st.warning("⚠️ Select at least one pair")
         elif not selected_timeframes:
-            st.warning("⚠️ Please select at least one timeframe in settings")
+            st.warning("⚠️ Select at least one timeframe")
         else:
-            with st.spinner("🔍 Scanning markets..."):
+            with st.spinner("🔍 Scanning..."):
                 signals = scan_markets(exchange, selected_pairs, selected_timeframes)
                 st.session_state.signals = signals
                 st.session_state.last_update = datetime.now()
                 st.rerun()
     
-    # Display signals - Mobile optimized
     if st.session_state.signals:
-        st.markdown(f"### 📊 {len(st.session_state.signals)} Active Signals")
+        st.markdown(f"### 📊 {len(st.session_state.signals)} Opportunities Detected")
         
-        for idx, signal in enumerate(st.session_state.signals):
-            # Determine card color
-            if signal['type'] == 'BULLISH':
-                card_color = "#10b981"
-                card_gradient = "linear-gradient(135deg, #10b981 0%, #059669 100%)"
-            elif signal['type'] == 'BEARISH':
-                card_color = "#ef4444"
-                card_gradient = "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
-            elif signal['type'] == 'STRONG':
-                card_color = "#8b5cf6"
-                card_gradient = "linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)"
-            elif signal['type'] == 'WARNING':
-                card_color = "#f59e0b"
-                card_gradient = "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)"
-            else:
-                card_color = "#3b82f6"
-                card_gradient = "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)"
+        for signal in st.session_state.signals:
+            direction_color = "#10b981" if signal['direction'] == 'UP' else "#ef4444"
             
-            # Signal card
             st.markdown(f"""
-            <div style="background: {card_gradient}; 
-                        padding: 1.5rem; 
-                        border-radius: 15px; 
-                        margin-bottom: 1.5rem; 
-                        color: white;
-                        box-shadow: 0 8px 16px rgba(0,0,0,0.2);">
-                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 1rem;">
-                    <div>
-                        <h2 style="margin: 0; font-size: 1.5rem;">{signal['symbol']}</h2>
-                        <p style="margin: 0.5rem 0; font-size: 1.1rem; opacity: 0.95;">{signal['pattern']}</p>
-                        <span style="background: rgba(255,255,255,0.2); 
-                                     padding: 0.3rem 0.8rem; 
-                                     border-radius: 20px; 
-                                     font-size: 0.85rem;
-                                     display: inline-block;">
-                            {signal['timeframe']}
-                        </span>
-                    </div>
-                    <div style="text-align: right;">
-                        <p style="margin: 0; font-weight: bold; font-size: 1.3rem;">
-                            ${signal['price']:.4f}
-                        </p>
-                    </div>
-                </div>
+            <div style="background: linear-gradient(135deg, {direction_color} 0%, {direction_color}dd 100%); 
+                        padding: 1.2rem; border-radius: 12px; margin-bottom: 1rem; color: white;">
+                <h3 style="margin: 0;">{signal['symbol']} - {signal['timeframe']}</h3>
+                <p style="margin: 0.5rem 0; font-size: 1.1rem; font-weight: bold;">{signal['strategy']}</p>
+                <p style="margin: 0; font-size: 1.2rem;">Price: ${signal['price']:.4f}</p>
             </div>
             """, unsafe_allow_html=True)
             
-            # Indicators - Mobile friendly
+            if signal['warning']:
+                st.error(f"⚠️ {signal['warning']}")
+            
+            st.markdown("**📋 Aligned Conditions:**")
+            conditions = signal['conditions']
+            
             col1, col2 = st.columns(2)
             with col1:
-                rsi_status = "🔴 Overbought" if signal['rsi'] > 70 else "🟢 Oversold" if signal['rsi'] < 30 else "🟡 Neutral"
-                st.info(f"**RSI:** {signal['rsi']:.1f}\n\n{rsi_status}")
+                st.text(f"✓ Trend: {conditions['Trend']}")
+                st.text(f"✓ Squeeze: {conditions['Squeeze Status']}")
+                st.text(f"✓ Momentum: {conditions['Momentum']}")
             with col2:
-                vwap_status = "✅ Above" if signal['vwap_diff'] > 0 else "⚠️ Below"
-                st.info(f"**VWAP:** {signal['vwap_diff']:.2f}%\n\n{vwap_status}")
+                st.text(f"✓ Value: {conditions['Value']}")
+                st.text(f"✓ Vacuum: {conditions['Vacuum']}")
             
-            # Reasoning
-            st.success(f"**💡 Analysis:** {signal['reasoning']}")
-            
-            if idx < len(st.session_state.signals) - 1:
-                st.divider()
+            st.divider()
     else:
-        # Empty state - Mobile friendly
-        st.info("👆 Tap **SCAN MARKETS NOW** to find trading signals")
-        st.markdown("""
-        ### 🚀 Quick Start
-        1. Open **⚙️ SETTINGS** above
-        2. Select your favorite trading pairs
-        3. Choose timeframes to scan
-        4. Tap the scan button
-        
-        💡 **Tip:** Enable auto-refresh to get updates every 60 seconds!
-        """)
+        st.info("👆 Tap **SCAN NOW** to find opportunities")
     
-    # Footer
     st.divider()
-    st.caption("📊 Timeframes: 3m • 5m • 15m • 1h • 4h")
-    st.caption("📈 Indicators: SMA 20/200 • RSI • VWAP")
-    st.caption("🔄 Auto-refresh updates every 60 seconds when enabled")
+    st.caption("📊 4 Strategies × 2 Directions × 2 Liquidity States = 16 Opportunities")
 
 if __name__ == "__main__":
     main()
