@@ -29,6 +29,8 @@ st.markdown("""
 
 if 'signals' not in st.session_state:
     st.session_state.signals = []
+if 'signal_history' not in st.session_state:
+    st.session_state.signal_history = []
 if 'last_update' not in st.session_state:
     st.session_state.last_update = None
 if 'auto_refresh_enabled' not in st.session_state:
@@ -112,7 +114,7 @@ def detect_signals(df, symbol, timeframe, liquidity_data):
     divergence_detected = curr_diff > prev_diff * 1.5 and sma_diff_pct > 1.0
     elephant_bar = False
     if not pd.isna(latest['avg_range']):
-        elephant_bar = (latest['range'] > latest['avg_range'] * 2.5 and latest['body'] > latest['range'] * 0.75)
+        elephant_bar = (latest['range'] > latest['avg_range'] * 2.0 and latest['body'] > latest['range'] * 0.65)  # Loosened from 2.5x and 75%
     is_bullish_elephant = elephant_bar and latest['close'] > latest['open']
     is_bearish_elephant = elephant_bar and latest['close'] < latest['open']
     sma20_above_200 = latest['sma_20'] > latest['sma_200']
@@ -152,13 +154,13 @@ def detect_signals(df, symbol, timeframe, liquidity_data):
             warning = "WARNING: THIN LIQUIDITY ABOVE" if liquidity_data['hole_above'] else ""
             signals.append({'symbol': symbol, 'timeframe': timeframe, 'strategy': f"3. Deadly Rejection DOWN [{vacuum_label}]", 'direction': 'DOWN', 'price': latest['close'], 'conditions': {'Trend': 'SMA 20 Above 200' if sma20_above_200 else 'SMA 20 Below 200', 'Squeeze Status': 'Squeeze Detected' if squeeze_detected else 'No Squeeze', 'Momentum': 'Elephant Bar Present' if elephant_bar else 'No Elephant Bar', 'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP', 'Vacuum': 'Vacuum Detected Below' if liquidity_data['hole_below'] else 'Order Depth Present'}, 'warning': warning})
     
-    if latest['rsi'] < 25 and not pd.isna(prev['sma_200']):
+    if latest['rsi'] < 30 and not pd.isna(prev['sma_200']):  # Loosened from 25 to 30
         if prev['low'] <= prev['sma_200'] and is_bullish_elephant:
             vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_above'] else "STANDARD"
             warning = "WARNING: THIN LIQUIDITY BELOW" if liquidity_data['hole_below'] else ""
             signals.append({'symbol': symbol, 'timeframe': timeframe, 'strategy': f"4. Snap-Back Long UP [{vacuum_label}]", 'direction': 'UP', 'price': latest['close'], 'conditions': {'Trend': 'SMA 20 Above 200' if sma20_above_200 else 'SMA 20 Below 200', 'Squeeze Status': 'Squeeze Detected' if squeeze_detected else 'No Squeeze', 'Momentum': 'Elephant Bar Present', 'Value': 'Price Above VWAP' if price_above_vwap else 'Price Below VWAP', 'Vacuum': 'Vacuum Detected Above' if liquidity_data['hole_above'] else 'Order Depth Present'}, 'warning': warning})
     
-    if latest['rsi'] > 75 and not pd.isna(prev['sma_200']):
+    if latest['rsi'] > 70 and not pd.isna(prev['sma_200']):  # Loosened from 75 to 70
         if prev['high'] >= prev['sma_200'] and is_bearish_elephant:
             vacuum_label = "PLUS (+ VACUUM)" if liquidity_data['hole_below'] else "STANDARD"
             warning = "WARNING: THIN LIQUIDITY ABOVE" if liquidity_data['hole_above'] else ""
@@ -186,12 +188,21 @@ def scan_markets(exchanges_to_scan, symbols, timeframes):
                             signals = detect_signals(df, symbol, timeframe, liquidity_data)
                             for sig in signals:
                                 sig['exchange'] = exchange_name
+                                sig['detected_at'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                # Check if this exact signal already exists in history
+                                signal_key = f"{sig['exchange']}_{sig['symbol']}_{sig['timeframe']}_{sig['strategy']}"
+                                existing_keys = [f"{h['exchange']}_{h['symbol']}_{h['timeframe']}_{h['strategy']}" for h in st.session_state.signal_history]
+                                if signal_key not in existing_keys:
+                                    st.session_state.signal_history.append(sig.copy())
                             all_signals.extend(signals)
                 except:
                     continue
                 time.sleep(0.05)
     progress_bar.empty()
     status_text.empty()
+    # Keep only last 100 signals in history to prevent memory issues
+    if len(st.session_state.signal_history) > 100:
+        st.session_state.signal_history = st.session_state.signal_history[-100:]
     return all_signals
 
 def main():
@@ -282,7 +293,7 @@ def main():
                 st.session_state.last_update = datetime.now()
                 st.rerun()
     if st.session_state.signals:
-        st.markdown(f"### 📊 {len(st.session_state.signals)} Opportunities")
+        st.markdown(f"### 📊 {len(st.session_state.signals)} Current Opportunities")
         for signal in st.session_state.signals:
             direction_color = "#10b981" if signal['direction'] == 'UP' else "#ef4444"
             st.markdown(f"""<div style="background: linear-gradient(135deg, {direction_color} 0%, {direction_color}dd 100%); padding: 1.2rem; border-radius: 12px; margin-bottom: 1rem; color: white;"><h3 style="margin: 0;">{signal['exchange']} | {signal['symbol']} - {signal['timeframe']}</h3><p style="margin: 0.5rem 0; font-size: 1.1rem; font-weight: bold;">{signal['strategy']}</p><p style="margin: 0; font-size: 1.2rem;">Price: ${signal['price']:.4f}</p></div>""", unsafe_allow_html=True)
@@ -301,6 +312,26 @@ def main():
             st.divider()
     else:
         st.info("👆 Tap **SCAN NOW** to find opportunities")
+    
+    # Signal History Section
+    if st.session_state.signal_history:
+        st.divider()
+        with st.expander(f"📜 SIGNAL HISTORY ({len(st.session_state.signal_history)} Total Captured)", expanded=False):
+            if st.button("🗑️ Clear History", use_container_width=True):
+                st.session_state.signal_history = []
+                st.rerun()
+            
+            st.caption("All signals captured today (even when you weren't watching)")
+            
+            for idx, signal in enumerate(reversed(st.session_state.signal_history)):
+                direction_emoji = "🟢" if signal['direction'] == 'UP' else "🔴"
+                st.markdown(f"""
+                **{direction_emoji} {signal['strategy']}**  
+                📊 {signal['exchange']} | {signal['symbol']} - {signal['timeframe']}  
+                💰 Price: ${signal['price']:.4f} | 🕐 {signal['detected_at']}
+                """)
+                if idx < len(st.session_state.signal_history) - 1:
+                    st.markdown("---")
     st.divider()
     st.caption("📊 4 Strategies × 2 Directions × 2 Liquidity = 16 Opportunities")
     st.caption("🔥 Scanning up to 120 coins for maximum signal detection")
