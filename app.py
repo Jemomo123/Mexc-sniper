@@ -333,8 +333,9 @@ def main():
                 if idx < len(st.session_state.signal_history) - 1:
                     st.markdown("---")
     st.divider()
-    st.caption("📊 4 Strategies × 2 Directions × 2 Liquidity = 16 Opportunities")
-    st.caption("🔥 Scanning up to 120 coins for maximum signal detection")
+    st.caption("📊 Now with 20+ Opportunity Types (Original 16 + Power Variants)")
+    st.caption("🔥 Fixed: Strategy 2 (Squeeze OR Divergence) | Strategy 4 (RSI + SMA Touch)")
+    st.caption("⚡ Bonus: 2B & 4B Power variants when all conditions align perfectly")
 
 if __name__ == "__main__":
     main()
