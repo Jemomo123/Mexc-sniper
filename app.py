@@ -1,4 +1,4 @@
-# Version 19 - Pure Trader Logic (Scalper First, Swing Second)
+# Version 23 - EXACT Trader Logic (NO DEVIATIONS)
 import streamlit as st
 import ccxt
 import pandas as pd
@@ -8,7 +8,7 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 import time
 
-st.set_page_config(page_title="Scalper Pro Scanner", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Expansion Scanner", page_icon="⚡", layout="wide", initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
@@ -16,12 +16,10 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    .stButton>button {width: 100%; border-radius: 12px; height: 3.5em; font-weight: bold; font-size: 1rem; margin: 0.5rem 0;}
-    div[data-testid="stMetricValue"] {font-size: 1.5rem; font-weight: bold;}
+    .stButton>button {width: 100%; border-radius: 12px; height: 3.5em; font-weight: bold; font-size: 1rem;}
     @media (max-width: 768px) {
         .row-widget.stHorizontal {flex-direction: column !important;}
         div[data-testid="column"] {width: 100% !important; margin-bottom: 1rem;}
-        .stButton>button {font-size: 1.1rem; height: 4em;}
     }
 </style>
 """, unsafe_allow_html=True)
@@ -30,6 +28,8 @@ if 'signals' not in st.session_state:
     st.session_state.signals = []
 if 'signal_history' not in st.session_state:
     st.session_state.signal_history = []
+if 'daily_stats' not in st.session_state:
+    st.session_state.daily_stats = {}
 if 'last_update' not in st.session_state:
     st.session_state.last_update = None
 if 'auto_refresh_enabled' not in st.session_state:
@@ -45,10 +45,8 @@ def init_exchange(exchange_name='mexc'):
             exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'spot'}, 'timeout': 30000})
         elif exchange_name == 'gateio':
             exchange = ccxt.gateio({'enableRateLimit': True, 'options': {'defaultType': 'spot'}, 'timeout': 30000})
-        else:
-            exchange = ccxt.mexc({'enableRateLimit': True, 'options': {'defaultType': 'spot'}, 'timeout': 30000})
         return exchange, exchange_name
-    except Exception as e:
+    except:
         return None, None
 
 def fetch_ohlcv(exchange, symbol, timeframe, limit=200):
@@ -71,6 +69,8 @@ def calculate_indicators(df):
         df['range'] = df['high'] - df['low']
         df['avg_range'] = df['range'].rolling(20).mean()
         df['body'] = abs(df['close'] - df['open'])
+        df['upper_wick'] = df['high'] - df[['open', 'close']].max(axis=1)
+        df['lower_wick'] = df[['open', 'close']].min(axis=1) - df['low']
         return df
     except:
         return None
@@ -79,287 +79,302 @@ def check_liquidity(exchange, symbol):
     try:
         orderbook = exchange.fetch_order_book(symbol)
         mid_price = (orderbook['bids'][0][0] + orderbook['asks'][0][0]) / 2
-        threshold = mid_price * 0.005
-        bid_depth = sum([bid[1] for bid in orderbook['bids'][:10] if bid[0] >= mid_price - threshold])
-        ask_depth = sum([ask[1] for ask in orderbook['asks'][:10] if ask[0] <= mid_price + threshold])
-        hole_above = ask_depth < bid_depth * 0.3
-        hole_below = bid_depth < ask_depth * 0.3
-        return {'hole_above': hole_above, 'hole_below': hole_below}
+        
+        # Check for firewall (large orders blocking direction)
+        threshold_above = mid_price * 1.02  # 2% above
+        threshold_below = mid_price * 0.98  # 2% below
+        
+        ask_volume_above = sum([ask[1] for ask in orderbook['asks'] if ask[0] <= threshold_above])
+        bid_volume_below = sum([bid[1] for bid in orderbook['bids'] if bid[0] >= threshold_below])
+        
+        avg_volume = (ask_volume_above + bid_volume_below) / 2
+        
+        firewall_above = ask_volume_above > avg_volume * 3  # 3x larger = firewall
+        firewall_below = bid_volume_below > avg_volume * 3
+        
+        hole_above = ask_volume_above < avg_volume * 0.3  # Very thin = liquidity hole
+        hole_below = bid_volume_below < avg_volume * 0.3
+        
+        return {
+            'firewall_above': firewall_above,
+            'firewall_below': firewall_below,
+            'hole_above': hole_above,
+            'hole_below': hole_below
+        }
     except:
-        return {'hole_above': False, 'hole_below': False}
+        return {'firewall_above': False, 'firewall_below': False, 'hole_above': False, 'hole_below': False}
 
-def detect_signals_trader_logic(df, df_higher, symbol, timeframe, liquidity_data):
+def detect_expansion_signals(df, df_15m, symbol, timeframe, liquidity_data):
     if df is None or len(df) < 100:
         return []
     
     signals = []
     latest = df.iloc[-1]
     prev = df.iloc[-2]
+    prev2 = df.iloc[-3]
     
     if pd.isna(latest['sma_20']) or pd.isna(latest['sma_100']) or pd.isna(latest['rsi']):
         return []
     
-    # Check higher timeframe bias (15m for scalps, 1h for swings)
-    higher_bias_bullish = True
-    higher_bias_bearish = True
-    if df_higher is not None and len(df_higher) >= 100:
-        latest_higher = df_higher.iloc[-1]
-        if not pd.isna(latest_higher['sma_100']):
-            higher_bias_bullish = latest_higher['close'] > latest_higher['sma_100']
-            higher_bias_bearish = latest_higher['close'] < latest_higher['sma_100']
+    # STEP 1: CHECK 15M BIAS (MANDATORY FILTER)
+    bias = "NEUTRAL"
+    if df_15m is not None and len(df_15m) >= 100:
+        latest_15m = df_15m.iloc[-1]
+        prev_15m = df_15m.iloc[-2]
+        
+        if not pd.isna(latest_15m['sma_100']) and not pd.isna(latest_15m['sma_20']):
+            price_above_100 = latest_15m['close'] > latest_15m['sma_100']
+            price_below_100 = latest_15m['close'] < latest_15m['sma_100']
+            sma20_rising = latest_15m['sma_20'] >= prev_15m['sma_20']
+            sma20_falling = latest_15m['sma_20'] <= prev_15m['sma_20']
+            rsi_bullish = latest_15m['rsi'] >= 50
+            rsi_bearish = latest_15m['rsi'] <= 50
+            
+            if price_above_100 and (sma20_rising or abs(latest_15m['sma_20'] - prev_15m['sma_20']) < 0.001) and rsi_bullish:
+                bias = "BULLISH"
+            elif price_below_100 and (sma20_falling or abs(latest_15m['sma_20'] - prev_15m['sma_20']) < 0.001) and rsi_bearish:
+                bias = "BEARISH"
+            else:
+                bias = "NEUTRAL"
     
-    # Current timeframe conditions
-    price_above_100 = latest['close'] > latest['sma_100']
-    price_below_100 = latest['close'] < latest['sma_100']
-    sma20_above_100 = latest['sma_20'] > latest['sma_100']
-    sma20_below_100 = latest['sma_20'] < latest['sma_100']
+    # If bias is NEUTRAL or unknown, output WAIT
+    if bias == "NEUTRAL":
+        signals.append({
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'direction': 'WAIT',
+            'conviction': 'WAIT',
+            'reason': '15m bias is NEUTRAL (chop around SMA100 or flat SMA20 or RSI 45-55). No trades allowed.',
+            'price': latest['close'],
+            'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'exchange': ''
+        })
+        return signals
     
-    # SMA 20 momentum
-    sma20_crossing_up = prev['sma_20'] <= prev['sma_100'] and latest['sma_20'] > latest['sma_100']
-    sma20_crossing_down = prev['sma_20'] >= prev['sma_100'] and latest['sma_20'] < latest['sma_100']
-    sma20_pullback_hold = sma20_above_100 and latest['close'] > latest['sma_20']
-    sma20_rejection = sma20_below_100 and latest['close'] < latest['sma_20']
+    # STEP 2: DETECT STRUCTURES (Not entries, just context)
+    # Squeeze detection
+    sma_distance = abs(latest['sma_20'] - latest['sma_100']) / latest['sma_100'] * 100
+    squeeze_present = sma_distance < 1.0
     
-    # RSI zones
-    is_scalp = timeframe in ['3m', '5m']
-    is_swing = timeframe in ['15m', '1h', '4h']
+    # Crossover detection
+    crossover_up = prev['sma_20'] <= prev['sma_100'] and latest['sma_20'] > latest['sma_100']
+    crossover_down = prev['sma_20'] >= prev['sma_100'] and latest['sma_20'] < latest['sma_100']
     
-    # Elephant/Tail bars
+    # STEP 3: DETECT EXPANSION (THE ONLY TRADEABLE EVENT)
+    # Expansion = price moving AWAY from SMA structure, distance INCREASING
+    prev_distance = abs(prev['close'] - prev['sma_100'])
+    curr_distance = abs(latest['close'] - latest['sma_100'])
+    prev2_distance = abs(prev2['close'] - prev2['sma_100'])
+    
+    expansion_happening = curr_distance > prev_distance and prev_distance > prev2_distance
+    
+    expansion_up = expansion_happening and latest['close'] > latest['sma_100']
+    expansion_down = expansion_happening and latest['close'] < latest['sma_100']
+    
+    if not expansion_happening:
+        signals.append({
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'direction': 'WAIT',
+            'conviction': 'WAIT',
+            'reason': 'No expansion detected. Price not moving decisively away from SMA structure.',
+            'price': latest['close'],
+            'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'exchange': ''
+        })
+        return signals
+    
+    # STEP 4: PRICE ACTION CONFIRMATION (Elephant bar OR Tail bar)
+    # Elephant bar: Large range (>2x avg) with strong body (>65%)
     elephant_bar = False
     if not pd.isna(latest['avg_range']):
         elephant_bar = latest['range'] > latest['avg_range'] * 2.0 and latest['body'] > latest['range'] * 0.65
-    is_bullish_bar = latest['close'] > latest['open']
-    is_bearish_bar = latest['close'] < latest['open']
     
-    # Chop detection
-    sma_diff = abs(latest['sma_20'] - latest['sma_100']) / latest['sma_100'] * 100
-    is_choppy = sma_diff < 0.3
+    # Tail bar: Clear rejection (wick >50% of range)
+    tail_bar_bullish = latest['lower_wick'] > latest['range'] * 0.5 and latest['close'] > latest['open']
+    tail_bar_bearish = latest['upper_wick'] > latest['range'] * 0.5 and latest['close'] < latest['open']
     
-    # SCALP LOGIC (3m, 5m)
-    if is_scalp:
-        # LONG SCALP
-        if higher_bias_bullish and price_above_100 and (sma20_crossing_up or sma20_pullback_hold):
-            if 45 <= latest['rsi'] <= 60:
-                # Calculate confidence
-                conf_score = 0
-                entry_reasons = []
-                
-                if higher_bias_bullish:
-                    conf_score += 1
-                    entry_reasons.append("15m Bias Bullish")
-                if sma20_crossing_up:
-                    conf_score += 2
-                    entry_reasons.append("SMA 20 Cross UP")
-                elif sma20_pullback_hold:
-                    conf_score += 1
-                    entry_reasons.append("SMA 20 Pullback Hold")
-                if 50 <= latest['rsi'] <= 55:
-                    conf_score += 2
-                    entry_reasons.append("RSI Perfect Zone")
-                elif 45 <= latest['rsi'] <= 60:
-                    conf_score += 1
-                    entry_reasons.append("RSI Healthy")
-                if elephant_bar and is_bullish_bar:
-                    conf_score += 2
-                    entry_reasons.append("Elephant Bar Present")
-                if liquidity_data['hole_above']:
-                    conf_score += 1
-                    entry_reasons.append("Vacuum Above (Easy Move)")
-                
-                # Determine confidence level
-                if conf_score >= 6:
-                    confidence = "🟢 HIGH"
-                elif conf_score >= 4:
-                    confidence = "🟡 MEDIUM"
-                elif conf_score >= 2:
-                    confidence = "🟠 CAUTION"
-                else:
-                    confidence = "⚪ WAIT"
-                
-                vacuum = " + VACUUM" if liquidity_data['hole_above'] else ""
-                signals.append({
-                    'symbol': symbol, 'timeframe': timeframe, 'exchange': '',
-                    'strategy': f"⚡ LONG SCALP{vacuum}",
-                    'direction': 'UP', 'price': latest['close'],
-                    'confidence': confidence,
-                    'conf_score': conf_score,
-                    'entry_reason': " | ".join(entry_reasons),
-                    'conditions': {
-                        'Mode': 'SCALP',
-                        'Bias (15m)': 'Bullish',
-                        'SMA 20': 'Momentum UP',
-                        'RSI': f"{latest['rsi']:.0f}",
-                        'Momentum': 'Elephant Bar' if elephant_bar else 'Normal'
-                    },
-                    'warning': 'Thin Liquidity Below' if liquidity_data['hole_below'] else '',
-                    'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
+    candle_confirmation = elephant_bar or tail_bar_bullish or tail_bar_bearish
+    
+    if not candle_confirmation:
+        signals.append({
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'direction': 'WAIT',
+            'conviction': 'WAIT',
+            'reason': 'Expansion present but no candle confirmation (need Elephant bar OR Tail bar).',
+            'price': latest['close'],
+            'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'exchange': ''
+        })
+        return signals
+    
+    # STEP 5: RSI POSITION (Context, not a signal)
+    rsi_bullish_context = latest['rsi'] >= 50
+    rsi_bearish_context = latest['rsi'] <= 50
+    
+    # STEP 6: LIQUIDITY CONTEXT
+    firewall_blocking_long = liquidity_data['firewall_above']
+    firewall_blocking_short = liquidity_data['firewall_below']
+    liquidity_bonus_long = liquidity_data['hole_above']
+    liquidity_bonus_short = liquidity_data['hole_below']
+    
+    # STEP 7: GENERATE SIGNALS
+    # LONG SETUP
+    if expansion_up and bias == "BULLISH":
+        conviction = "WAIT"
+        reason_parts = []
         
-        # SHORT SCALP
-        if higher_bias_bearish and price_below_100 and (sma20_crossing_down or sma20_rejection):
-            if 40 <= latest['rsi'] <= 55:
-                conf_score = 0
-                entry_reasons = []
-                
-                if higher_bias_bearish:
-                    conf_score += 1
-                    entry_reasons.append("15m Bias Bearish")
-                if sma20_crossing_down:
-                    conf_score += 2
-                    entry_reasons.append("SMA 20 Cross DOWN")
-                elif sma20_rejection:
-                    conf_score += 1
-                    entry_reasons.append("SMA 20 Rejection")
-                if 45 <= latest['rsi'] <= 50:
-                    conf_score += 2
-                    entry_reasons.append("RSI Perfect Zone")
-                elif 40 <= latest['rsi'] <= 55:
-                    conf_score += 1
-                    entry_reasons.append("RSI Healthy")
-                if elephant_bar and is_bearish_bar:
-                    conf_score += 2
-                    entry_reasons.append("Elephant Bar Present")
-                if liquidity_data['hole_below']:
-                    conf_score += 1
-                    entry_reasons.append("Vacuum Below (Easy Move)")
-                
-                if conf_score >= 6:
-                    confidence = "🟢 HIGH"
-                elif conf_score >= 4:
-                    confidence = "🟡 MEDIUM"
-                elif conf_score >= 2:
-                    confidence = "🟠 CAUTION"
-                else:
-                    confidence = "⚪ WAIT"
-                
-                vacuum = " + VACUUM" if liquidity_data['hole_below'] else ""
-                signals.append({
-                    'symbol': symbol, 'timeframe': timeframe, 'exchange': '',
-                    'strategy': f"⚡ SHORT SCALP{vacuum}",
-                    'direction': 'DOWN', 'price': latest['close'],
-                    'confidence': confidence,
-                    'conf_score': conf_score,
-                    'entry_reason': " | ".join(entry_reasons),
-                    'conditions': {
-                        'Mode': 'SCALP',
-                        'Bias (15m)': 'Bearish',
-                        'SMA 20': 'Momentum DOWN',
-                        'RSI': f"{latest['rsi']:.0f}",
-                        'Momentum': 'Elephant Bar' if elephant_bar else 'Normal'
-                    },
-                    'warning': 'Thin Liquidity Above' if liquidity_data['hole_above'] else '',
-                    'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-    
-    # SWING LOGIC (15m, 1h, 4h)
-    if is_swing:
-        # LONG SWING
-        if price_above_100 and sma20_above_100:
-            if 40 <= latest['rsi'] <= 65:
-                conf_score = 0
-                entry_reasons = []
-                
-                if price_above_100:
-                    conf_score += 2
-                    entry_reasons.append("Price Above SMA 100")
-                if sma20_above_100:
-                    conf_score += 2
-                    entry_reasons.append("SMA 20 Above 100 (Trend)")
-                if 45 <= latest['rsi'] <= 60:
-                    conf_score += 2
-                    entry_reasons.append("RSI Perfect Zone")
-                elif 40 <= latest['rsi'] <= 65:
-                    conf_score += 1
-                    entry_reasons.append("RSI Healthy")
-                if elephant_bar and is_bullish_bar:
-                    conf_score += 1
-                    entry_reasons.append("Elephant Bar")
-                if liquidity_data['hole_above']:
-                    conf_score += 1
-                    entry_reasons.append("Vacuum Above")
-                
-                if conf_score >= 6:
-                    confidence = "🟢 HIGH"
-                elif conf_score >= 4:
-                    confidence = "🟡 MEDIUM"
-                elif conf_score >= 2:
-                    confidence = "🟠 CAUTION"
-                else:
-                    confidence = "⚪ WAIT"
-                
-                vacuum = " + VACUUM" if liquidity_data['hole_above'] else ""
-                signals.append({
-                    'symbol': symbol, 'timeframe': timeframe, 'exchange': '',
-                    'strategy': f"🐢 LONG SWING{vacuum}",
-                    'direction': 'UP', 'price': latest['price'],
-                    'confidence': confidence,
-                    'conf_score': conf_score,
-                    'entry_reason': " | ".join(entry_reasons),
-                    'conditions': {
-                        'Mode': 'SWING',
-                        'SMA 100': 'Price Above',
-                        'SMA 20': 'Above 100',
-                        'RSI': f"{latest['rsi']:.0f}",
-                        'Momentum': 'Elephant Bar' if elephant_bar else 'Normal'
-                    },
-                    'warning': 'Thin Liquidity Below' if liquidity_data['hole_below'] else '',
-                    'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
+        # Check all conditions
+        has_expansion = True
+        has_candle = candle_confirmation
+        has_rsi_aligned = rsi_bullish_context
+        has_15m_bias = bias == "BULLISH"
+        no_firewall = not firewall_blocking_long
+        has_liquidity_bonus = liquidity_bonus_long
         
-        # SHORT SWING
-        if price_below_100 and sma20_below_100:
-            if 35 <= latest['rsi'] <= 60:
-                conf_score = 0
-                entry_reasons = []
-                
-                if price_below_100:
-                    conf_score += 2
-                    entry_reasons.append("Price Below SMA 100")
-                if sma20_below_100:
-                    conf_score += 2
-                    entry_reasons.append("SMA 20 Below 100 (Trend)")
-                if 40 <= latest['rsi'] <= 55:
-                    conf_score += 2
-                    entry_reasons.append("RSI Perfect Zone")
-                elif 35 <= latest['rsi'] <= 60:
-                    conf_score += 1
-                    entry_reasons.append("RSI Healthy")
-                if elephant_bar and is_bearish_bar:
-                    conf_score += 1
-                    entry_reasons.append("Elephant Bar")
-                if liquidity_data['hole_below']:
-                    conf_score += 1
-                    entry_reasons.append("Vacuum Below")
-                
-                if conf_score >= 6:
-                    confidence = "🟢 HIGH"
-                elif conf_score >= 4:
-                    confidence = "🟡 MEDIUM"
-                elif conf_score >= 2:
-                    confidence = "🟠 CAUTION"
-                else:
-                    confidence = "⚪ WAIT"
-                
-                vacuum = " + VACUUM" if liquidity_data['hole_below'] else ""
-                signals.append({
-                    'symbol': symbol, 'timeframe': timeframe, 'exchange': '',
-                    'strategy': f"🐢 SHORT SWING{vacuum}",
-                    'direction': 'DOWN', 'price': latest['close'],
-                    'confidence': confidence,
-                    'conf_score': conf_score,
-                    'entry_reason': " | ".join(entry_reasons),
-                    'conditions': {
-                        'Mode': 'SWING',
-                        'SMA 100': 'Price Below',
-                        'SMA 20': 'Below 100',
-                        'RSI': f"{latest['rsi']:.0f}",
-                        'Momentum': 'Elephant Bar' if elephant_bar else 'Normal'
-                    },
-                    'warning': 'Thin Liquidity Above' if liquidity_data['hole_above'] else '',
-                    'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
+        reason_parts.append("Expansion UP confirmed (price moving away from SMA structure)")
+        
+        if elephant_bar:
+            reason_parts.append("Elephant bar present (strong momentum)")
+        elif tail_bar_bullish:
+            reason_parts.append("Tail bar present (bullish rejection)")
+        
+        if has_rsi_aligned:
+            reason_parts.append(f"RSI {latest['rsi']:.0f} (bullish context)")
+        else:
+            reason_parts.append(f"RSI {latest['rsi']:.0f} (bearish context - concern)")
+        
+        reason_parts.append("15m bias BULLISH (aligned)")
+        
+        if firewall_blocking_long:
+            reason_parts.append("⚠️ FIREWALL ABOVE (large sell orders blocking path)")
+            conviction = "CAUTION"
+        elif has_liquidity_bonus:
+            reason_parts.append("Liquidity hole above (clean path - BONUS)")
+        else:
+            reason_parts.append("Normal liquidity above")
+        
+        # Determine conviction
+        if has_expansion and has_candle and has_rsi_aligned and has_15m_bias and no_firewall:
+            if has_liquidity_bonus:
+                conviction = "🟢 HIGH"
+            else:
+                conviction = "🟡 MEDIUM"
+        elif has_expansion and has_candle and has_15m_bias:
+            conviction = "🟠 CAUTION"
+        else:
+            conviction = "⚪ WAIT"
+        
+        signals.append({
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'direction': 'LONG',
+            'conviction': conviction,
+            'reason': " | ".join(reason_parts),
+            'price': latest['close'],
+            'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'exchange': ''
+        })
+    
+    # SHORT SETUP
+    if expansion_down and bias == "BEARISH":
+        conviction = "WAIT"
+        reason_parts = []
+        
+        has_expansion = True
+        has_candle = candle_confirmation
+        has_rsi_aligned = rsi_bearish_context
+        has_15m_bias = bias == "BEARISH"
+        no_firewall = not firewall_blocking_short
+        has_liquidity_bonus = liquidity_bonus_short
+        
+        reason_parts.append("Expansion DOWN confirmed (price moving away from SMA structure)")
+        
+        if elephant_bar:
+            reason_parts.append("Elephant bar present (strong momentum)")
+        elif tail_bar_bearish:
+            reason_parts.append("Tail bar present (bearish rejection)")
+        
+        if has_rsi_aligned:
+            reason_parts.append(f"RSI {latest['rsi']:.0f} (bearish context)")
+        else:
+            reason_parts.append(f"RSI {latest['rsi']:.0f} (bullish context - concern)")
+        
+        reason_parts.append("15m bias BEARISH (aligned)")
+        
+        if firewall_blocking_short:
+            reason_parts.append("⚠️ FIREWALL BELOW (large buy orders blocking path)")
+            conviction = "CAUTION"
+        elif has_liquidity_bonus:
+            reason_parts.append("Liquidity hole below (clean path - BONUS)")
+        else:
+            reason_parts.append("Normal liquidity below")
+        
+        if has_expansion and has_candle and has_rsi_aligned and has_15m_bias and no_firewall:
+            if has_liquidity_bonus:
+                conviction = "🟢 HIGH"
+            else:
+                conviction = "🟡 MEDIUM"
+        elif has_expansion and has_candle and has_15m_bias:
+            conviction = "🟠 CAUTION"
+        else:
+            conviction = "⚪ WAIT"
+        
+        signals.append({
+            'symbol': symbol,
+            'timeframe': timeframe,
+            'direction': 'SHORT',
+            'conviction': conviction,
+            'reason': " | ".join(reason_parts),
+            'price': latest['close'],
+            'detected_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'exchange': ''
+        })
     
     return signals
+
+def update_daily_stats(signal):
+    try:
+        signal_date = signal.get('detected_at', '').split(' ')[0]
+        if signal_date and signal['conviction'] != 'WAIT':
+            if signal_date not in st.session_state.daily_stats:
+                st.session_state.daily_stats[signal_date] = {
+                    'total': 0, 'longs': 0, 'shorts': 0, 'high': 0, 'medium': 0, 'caution': 0
+                }
+            stats = st.session_state.daily_stats[signal_date]
+            stats['total'] += 1
+            if signal['direction'] == 'LONG':
+                stats['longs'] += 1
+            elif signal['direction'] == 'SHORT':
+                stats['shorts'] += 1
+            if '🟢' in signal['conviction']:
+                stats['high'] += 1
+            elif '🟡' in signal['conviction']:
+                stats['medium'] += 1
+            elif '🟠' in signal['conviction']:
+                stats['caution'] += 1
+    except:
+        pass
+
+def get_time_ago(timestamp_str):
+    try:
+        signal_time = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+        now = datetime.now()
+        diff = now - signal_time
+        seconds = int(diff.total_seconds())
+        if seconds < 10:
+            return "🔴 NOW"
+        elif seconds < 60:
+            return f"🟠 {seconds}s ago"
+        elif seconds < 3600:
+            return f"🟡 {seconds // 60}m ago"
+        elif seconds < 86400:
+            return f"🟢 {seconds // 3600}h ago"
+        else:
+            return f"⚪ {seconds // 86400}d ago"
+    except:
+        return "⚪ Unknown"
 
 def scan_markets(exchanges_to_scan, symbols, timeframes):
     all_signals = []
@@ -371,7 +386,6 @@ def scan_markets(exchanges_to_scan, symbols, timeframes):
     for exchange, exchange_name in exchanges_to_scan:
         for symbol in symbols:
             liquidity_data = check_liquidity(exchange, symbol)
-            # Get higher timeframe for bias
             df_15m = fetch_ohlcv(exchange, symbol, '15m', 100)
             if df_15m is not None:
                 df_15m = calculate_indicators(df_15m)
@@ -385,13 +399,15 @@ def scan_markets(exchanges_to_scan, symbols, timeframes):
                     if df is not None:
                         df = calculate_indicators(df)
                         if df is not None:
-                            signals = detect_signals_trader_logic(df, df_15m, symbol, timeframe, liquidity_data)
+                            signals = detect_expansion_signals(df, df_15m, symbol, timeframe, liquidity_data)
                             for sig in signals:
                                 sig['exchange'] = exchange_name
-                                signal_key = f"{sig['exchange']}_{sig['symbol']}_{sig['timeframe']}_{sig['strategy']}"
-                                existing_keys = [f"{h['exchange']}_{h['symbol']}_{h['timeframe']}_{h['strategy']}" for h in st.session_state.signal_history]
-                                if signal_key not in existing_keys:
-                                    st.session_state.signal_history.append(sig.copy())
+                                if sig['conviction'] != 'WAIT':
+                                    signal_key = f"{sig['exchange']}_{sig['symbol']}_{sig['timeframe']}_{sig['direction']}"
+                                    existing_keys = [f"{h['exchange']}_{h['symbol']}_{h['timeframe']}_{h['direction']}" for h in st.session_state.signal_history]
+                                    if signal_key not in existing_keys:
+                                        st.session_state.signal_history.append(sig.copy())
+                                        update_daily_stats(sig)
                             all_signals.extend(signals)
                 except:
                     continue
@@ -404,8 +420,8 @@ def scan_markets(exchanges_to_scan, symbols, timeframes):
     return all_signals
 
 def main():
-    st.markdown("# ⚡ Scalper Pro Scanner")
-    st.caption("📱 Scalper First, Swing Second | Pure Trader Logic")
+    st.markdown("# ⚡ Expansion Scanner")
+    st.caption("📱 Scalper First | Discretionary Edge | EXPANSION ONLY")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -414,18 +430,18 @@ def main():
         use_gateio = st.checkbox("📊 Gate.io", value=False)
     
     if not use_mexc and not use_gateio:
-        st.warning("⚠️ Select at least one exchange")
+        st.warning("⚠️ Select exchange")
         st.stop()
     
     exchanges_to_scan = []
     if use_mexc:
-        exchange_mexc, name_mexc = init_exchange('mexc')
-        if exchange_mexc:
-            exchanges_to_scan.append((exchange_mexc, 'MEXC'))
+        ex, nm = init_exchange('mexc')
+        if ex:
+            exchanges_to_scan.append((ex, 'MEXC'))
     if use_gateio:
-        exchange_gate, name_gate = init_exchange('gateio')
-        if exchange_gate:
-            exchanges_to_scan.append((exchange_gate, 'Gate.io'))
+        ex, nm = init_exchange('gateio')
+        if ex:
+            exchanges_to_scan.append((ex, 'Gate.io'))
     
     if not exchanges_to_scan:
         st.error("❌ Failed to connect")
@@ -437,56 +453,37 @@ def main():
         try:
             markets = exchange.load_markets()
             usdt_pairs = [s for s in markets.keys() if s.endswith('/USDT') and markets[s]['active']]
-            top_40 = ['BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'SOL/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOGE/USDT', 'DOT/USDT', 'MATIC/USDT', 'LINK/USDT', 'UNI/USDT', 'LTC/USDT', 'ATOM/USDT', 'XLM/USDT', 'ALGO/USDT', 'VET/USDT', 'ICP/USDT', 'FIL/USDT', 'HBAR/USDT', 'APT/USDT', 'ARB/USDT', 'OP/USDT', 'SUI/USDT', 'TIA/USDT', 'SEI/USDT', 'INJ/USDT', 'STX/USDT', 'RUNE/USDT', 'FTM/USDT', 'NEAR/USDT', 'AAVE/USDT', 'MKR/USDT', 'SNX/USDT', 'CRV/USDT', 'LDO/USDT', 'IMX/USDT', 'SAND/USDT', 'MANA/USDT', 'AXS/USDT']
-            memecoins = ['PEPE/USDT', 'SHIB/USDT', 'FLOKI/USDT', 'BONK/USDT', 'WIF/USDT', 'DOGE/USDT', 'MEME/USDT', 'WOJAK/USDT', 'TURBO/USDT', 'PEPE2/USDT', 'LADYS/USDT', 'BABYDOGE/USDT', 'ELON/USDT', 'KISHU/USDT', 'AKITA/USDT', 'SAMO/USDT', 'HOGE/USDT', 'SHIBAI/USDT', 'VOLT/USDT', 'CHEEMS/USDT', 'GROK/USDT', 'MYRO/USDT', 'MONG/USDT', 'NEIRO/USDT', 'MOG/USDT', 'TOSHI/USDT', 'BRETT/USDT', 'DEGEN/USDT', 'MEW/USDT', 'POPCAT/USDT', 'DOGS/USDT', 'NUBS/USDT', 'HAMMY/USDT', 'BONE/USDT', 'LEASH/USDT', 'SATS/USDT', 'RATS/USDT', 'ORDI/USDT', 'DORK/USDT', 'PONKE/USDT', 'BOZO/USDT', 'CATWIF/USDT', 'HOBBES/USDT', 'TRAC/USDT', 'BILLY/USDT', 'MAGA/USDT', 'BODEN/USDT', 'TREMP/USDT', 'COUPE/USDT', 'BITCOIN/USDT']
-            trending = ['WLD/USDT', 'PYTH/USDT', 'JUP/USDT', 'STRK/USDT', 'DYM/USDT', 'PORTAL/USDT', 'ACE/USDT', 'NFP/USDT', 'AI/USDT', 'XAI/USDT', 'MANTA/USDT', 'ALT/USDT', 'JTO/USDT', 'PIXEL/USDT', 'SAGA/USDT', 'OMNI/USDT', 'MERL/USDT', 'REZ/USDT', 'BB/USDT', 'IO/USDT', 'ZK/USDT', 'ZRO/USDT', 'G/USDT', 'LISTA/USDT', 'BANANA/USDT', 'RENDER/USDT', 'FET/USDT', 'AGIX/USDT', 'OCEAN/USDT', 'GRT/USDT']
+            top_40 = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'MATIC/USDT', 'LINK/USDT']
+            memecoins = ['PEPE/USDT', 'SHIB/USDT', 'FLOKI/USDT', 'BONK/USDT', 'WIF/USDT', 'DOGE/USDT']
+            
             top_40_available = [p for p in top_40 if p in usdt_pairs]
             memecoins_available = [p for p in memecoins if p in usdt_pairs]
-            trending_available = [p for p in trending if p in usdt_pairs]
-            default_120 = (top_40_available + memecoins_available + trending_available)[:120]
+            default_pairs = top_40_available[:10] + memecoins_available[:5]
         except:
             usdt_pairs = []
-            default_120 = []
+            default_pairs = []
         
-        st.markdown("### 📊 Trading Pairs")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("📈 Top 40", use_container_width=True):
-                st.session_state.selected_pairs = top_40_available
-        with col2:
-            if st.button("🐸 Memes", use_container_width=True):
-                st.session_state.selected_pairs = memecoins_available
-        with col3:
-            if st.button("🔥 Trending", use_container_width=True):
-                st.session_state.selected_pairs = trending_available
-        
-        if st.button("⭐ ALL 120 COINS", use_container_width=True, type="primary"):
-            st.session_state.selected_pairs = default_120
-        
+        st.markdown("### 📊 Pairs")
         if 'selected_pairs' not in st.session_state:
-            st.session_state.selected_pairs = default_120
+            st.session_state.selected_pairs = default_pairs
         
-        selected_pairs = st.multiselect(f"Selected: {len(st.session_state.selected_pairs)} pairs", usdt_pairs, default=st.session_state.selected_pairs)
+        selected_pairs = st.multiselect(f"Selected: {len(st.session_state.selected_pairs)}", usdt_pairs, default=st.session_state.selected_pairs)
         
-        st.markdown("### ⏱️ Timeframes")
-        selected_timeframes = st.multiselect("Select", ['3m', '5m', '15m', '1h', '4h'], default=['3m', '5m', '15m'])
+        st.markdown("### ⏱️ Timeframes (3m/5m only)")
+        selected_timeframes = st.multiselect("Select", ['3m', '5m'], default=['3m', '5m'])
         
-        st.markdown("### 🔄 Auto-Refresh")
+        st.markdown("### 🔄 Auto")
         auto_refresh = st.toggle("Enable (60s)", value=st.session_state.auto_refresh_enabled)
         st.session_state.auto_refresh_enabled = auto_refresh
     
-    scan_button = st.button("🔍 SCAN NOW", type="primary", use_container_width=True)
+    scan_button = st.button("🔍 SCAN", type="primary", use_container_width=True)
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("🎯 Signals", len(st.session_state.signals))
+        tradeable = len([s for s in st.session_state.signals if s['conviction'] != 'WAIT'])
+        st.metric("🎯 Tradeable", tradeable)
     with col2:
-        active_exchanges = []
-        if use_mexc:
-            active_exchanges.append("MEXC")
-        if use_gateio:
-            active_exchanges.append("Gate")
-        st.metric("📡 Exchanges", " + ".join(active_exchanges))
+        st.metric("📡 Exchange", " + ".join([e[1] for e in exchanges_to_scan]))
     with col3:
         if st.session_state.last_update:
             st.metric("🕐 Updated", st.session_state.last_update.strftime("%H:%M"))
@@ -496,118 +493,80 @@ def main():
     st.divider()
     
     if scan_button or (not st.session_state.signals and selected_pairs):
-        if not selected_pairs:
-            st.warning("⚠️ Select pairs")
-        elif not selected_timeframes:
-            st.warning("⚠️ Select timeframes")
+        if not selected_pairs or not selected_timeframes:
+            st.warning("⚠️ Select pairs and timeframes")
         else:
-            with st.spinner("🔍 Scanning..."):
+            with st.spinner("🔍 Scanning for EXPANSION..."):
                 signals = scan_markets(exchanges_to_scan, selected_pairs, selected_timeframes)
                 st.session_state.signals = signals
                 st.session_state.last_update = datetime.now()
                 st.rerun()
     
     if st.session_state.signals:
-        st.markdown(f"### 📊 {len(st.session_state.signals)} Active Signals")
+        tradeable_signals = [s for s in st.session_state.signals if s['conviction'] != 'WAIT']
+        wait_signals = [s for s in st.session_state.signals if s['conviction'] == 'WAIT']
         
-        # Filter options
-        col1, col2 = st.columns(2)
-        with col1:
-            filter_conf = st.selectbox("Filter by Confidence", ["All", "🟢 HIGH Only", "🟡 MEDIUM+", "🟠 CAUTION+"])
-        with col2:
-            filter_type = st.selectbox("Filter by Type", ["All", "⚡ Scalps Only", "🐢 Swings Only"])
-        
-        # Apply filters
-        filtered_signals = st.session_state.signals
-        if filter_conf == "🟢 HIGH Only":
-            filtered_signals = [s for s in filtered_signals if "🟢" in s.get('confidence', '')]
-        elif filter_conf == "🟡 MEDIUM+":
-            filtered_signals = [s for s in filtered_signals if "🟢" in s.get('confidence', '') or "🟡" in s.get('confidence', '')]
-        elif filter_conf == "🟠 CAUTION+":
-            filtered_signals = [s for s in filtered_signals if "⚪" not in s.get('confidence', '')]
-        
-        if filter_type == "⚡ Scalps Only":
-            filtered_signals = [s for s in filtered_signals if "SCALP" in s['strategy']]
-        elif filter_type == "🐢 Swings Only":
-            filtered_signals = [s for s in filtered_signals if "SWING" in s['strategy']]
-        
-        st.caption(f"Showing {len(filtered_signals)} of {len(st.session_state.signals)} signals")
-        
-        # Display as table
-        for signal in filtered_signals:
-            if signal['direction'] == 'UP':
-                direction_color = "#10b981"
-            elif signal['direction'] == 'DOWN':
-                direction_color = "#ef4444"
-            else:
-                direction_color = "#f59e0b"
+        if tradeable_signals:
+            st.markdown(f"### 📊 {len(tradeable_signals)} TRADEABLE Setups")
             
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, {direction_color} 0%, {direction_color}dd 100%); 
-                        padding: 1rem; border-radius: 12px; margin-bottom: 1rem; color: white;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div>
-                        <h3 style="margin: 0;">{signal['exchange']} | {signal['symbol']}</h3>
-                        <p style="margin: 0.3rem 0; font-size: 0.9rem; opacity: 0.9;">{signal['timeframe']} | ${signal['price']:.4f}</p>
+            for signal in tradeable_signals:
+                if signal['direction'] == 'LONG':
+                    color = "#10b981"
+                else:
+                    color = "#ef4444"
+                
+                time_ago = get_time_ago(signal['detected_at'])
+                
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, {color} 0%, {color}dd 100%); 
+                            padding: 1rem; border-radius: 12px; margin-bottom: 1rem; color: white;">
+                    <div style="display: flex; justify-content: space-between; align-items: start;">
+                        <div>
+                            <h3 style="margin: 0;">{signal['exchange']} | {signal['symbol']}</h3>
+                            <p style="margin: 0.3rem 0; font-size: 0.9rem;">{signal['timeframe']} | ${signal['price']:.4f}</p>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-size: 1.3rem; font-weight: bold; margin-bottom: 0.3rem;">
+                                {signal['conviction']}
+                            </div>
+                            <div style="background: rgba(0,0,0,0.3); padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.85rem;">
+                                ⏱️ {time_ago}
+                            </div>
+                        </div>
                     </div>
-                    <div style="text-align: right;">
-                        <div style="background: rgba(255,255,255,0.2); padding: 0.3rem 0.8rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 0.3rem;">
-                            {signal['strategy']}
-                        </div>
-                        <div style="font-size: 1.3rem; font-weight: bold;">
-                            {signal.get('confidence', 'N/A')}
-                        </div>
+                    <div style="background: rgba(255,255,255,0.15); padding: 0.5rem 0.8rem; border-radius: 8px; font-size: 0.9rem; margin-top: 0.5rem;">
+                        {signal['direction']}
                     </div>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Entry Reason Table
-            st.markdown("**📋 ENTRY REASON:**")
-            st.info(signal.get('entry_reason', 'No reason provided'))
-            
-            if signal.get('warning'):
-                st.error(f"⚠️ {signal['warning']}")
-            
-            # Expandable details
-            with st.expander("📊 See Full Details"):
-                conditions = signal.get('conditions', {})
-                col1, col2 = st.columns(2)
-                with col1:
-                    for key in list(conditions.keys())[:3]:
-                        st.text(f"✓ {key}: {conditions[key]}")
-                with col2:
-                    for key in list(conditions.keys())[3:]:
-                        st.text(f"✓ {key}: {conditions[key]}")
+                """, unsafe_allow_html=True)
                 
-                st.text(f"Confidence Score: {signal.get('conf_score', 0)}/8")
-            
-            st.divider()
-    else:
-        st.info("👆 Tap **SCAN NOW**")
-        st.markdown("""
-        ### ⚡ Scalper Logic
-        **LONG:** 15m bias up + Price > SMA 100 + SMA 20 momentum + RSI 45-60
-        **SHORT:** 15m bias down + Price < SMA 100 + SMA 20 momentum + RSI 40-55
+                st.info(f"**REASON:** {signal['reason']}")
+                st.divider()
         
-        **STAND DOWN:** Chop around SMA 100 or RSI extremes
+        if wait_signals:
+            with st.expander(f"⚪ {len(wait_signals)} WAIT Signals (Not Tradeable)", expanded=False):
+                for signal in wait_signals[:10]:
+                    st.markdown(f"**{signal['symbol']} - {signal['timeframe']}**")
+                    st.caption(signal['reason'])
+                    st.markdown("---")
+    else:
+        st.info("👆 Tap **SCAN**")
+        st.markdown("""
+        ### 🧠 EXPANSION LOGIC
+        **ONLY tradeable event:** Price moving decisively AWAY from SMA structure
+        
+        **Required:**
+        1. 15m bias aligned (BULLISH or BEARISH)
+        2. Expansion confirmed (distance increasing)
+        3. Elephant bar OR Tail bar
+        4. RSI context aligned
+        5. No firewall blocking direction
+        
+        **If ANY condition missing:** Output = WAIT
         """)
     
-    if st.session_state.signal_history:
-        st.divider()
-        with st.expander(f"📜 SIGNAL HISTORY ({len(st.session_state.signal_history)} Total)", expanded=False):
-            if st.button("🗑️ Clear History", use_container_width=True):
-                st.session_state.signal_history = []
-                st.rerun()
-            for idx, signal in enumerate(reversed(st.session_state.signal_history[-20:])):
-                direction_emoji = "🟢" if signal['direction'] == 'UP' else "🔴" if signal['direction'] == 'DOWN' else "⚠️"
-                st.markdown(f"**{direction_emoji} {signal['strategy']}** | {signal['exchange']} {signal['symbol']} - {signal['timeframe']} | ${signal['price']:.4f} | {signal['detected_at']}")
-                if idx < 19:
-                    st.markdown("---")
-    
     st.divider()
-    st.caption("⚡ Scalper First: 3m/5m with 15m bias | 🐢 Swing Second: 15m/1h/4h")
-    st.caption("🧠 'Trade with SMA 100 bias, enter with SMA 20, filter with RSI'")
+    st.caption("⚡ EXPANSION ONLY | No predictions | No forced trades | Pure discretionary edge")
 
 if __name__ == "__main__":
     main()
